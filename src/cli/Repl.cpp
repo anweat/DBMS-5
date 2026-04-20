@@ -98,6 +98,23 @@ void Repl::run() {
             continue;
         }
 
+        // 空行且有缓冲内容：直接执行（无需 ;）
+        if (trimmed.empty() && !buf.empty()) {
+            std::string stmt = buf;
+            size_t s = stmt.find_first_not_of(" \t\r\n");
+            if (s != std::string::npos) {
+                stmt = stmt.substr(s);
+                size_t e = stmt.find_last_not_of(" \t\r\n");
+                if (e != std::string::npos) stmt = stmt.substr(0, e + 1);
+                if (!stmt.empty()) {
+                    session_.addHistory(stmt);
+                    handleInput(stmt);
+                }
+            }
+            buf.clear();
+            continue;
+        }
+
         buf += line + '\n';
 
         // 检测语句结束的 ;

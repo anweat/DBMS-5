@@ -57,11 +57,18 @@ std::string Executor::resolveDb(const std::string &nodeDb, const Session &s)
     throw DBException(ErrorCode::DB_NOT_FOUND, "No database selected. Use USE <database> first.");
 }
 
+// 辅助：要求会话已认证（未登录则拒绝）
+static void requireAuthenticated(const Session &s)
+{
+    if (s.user.empty())
+        throw DBException(ErrorCode::PERMISSION_DENIED,
+                          "Not authenticated. Use: CONNECT 'user' IDENTIFIED BY 'password'");
+}
+
 void Executor::checkPermission(const Session &s, const std::string &db,
                                const std::string &table, Privilege priv)
 {
-    if (s.user.empty())
-        return; // 匿名会话：跳过权限检查（向后兼容）
+    requireAuthenticated(s);  // 未登录直接拒绝
     if (!userMgr_.hasPrivilege(s.user, db, table, priv))
     {
         std::string privName;
@@ -344,8 +351,9 @@ QueryResult Executor::execute(const ASTNode &ast, Session &session)
 // DDL – 数据库
 // ============================================================
 
-QueryResult Executor::execCreateDatabase(const CreateDatabaseNode &n, Session & /*s*/)
+QueryResult Executor::execCreateDatabase(const CreateDatabaseNode &n, Session &s)
 {
+    checkPermission(s, "*", "*", Privilege::ALL);  // 仅 root 或全局 ALL 权限
     if (n.ifNotExists && dbMgr_.databaseExists(n.name))
         return QueryResult::ok("Database '" + n.name + "' already exists (skipped).");
     dbMgr_.createDatabase(n.name);
@@ -354,6 +362,7 @@ QueryResult Executor::execCreateDatabase(const CreateDatabaseNode &n, Session & 
 
 QueryResult Executor::execDropDatabase(const DropDatabaseNode &n, Session &s)
 {
+    checkPermission(s, "*", "*", Privilege::ALL);  // 仅 root 或全局 ALL 权限
     if (n.ifExists && !dbMgr_.databaseExists(n.name))
         return QueryResult::ok("Database '" + n.name + "' does not exist (skipped).");
     dbMgr_.dropDatabase(n.name);
@@ -363,8 +372,9 @@ QueryResult Executor::execDropDatabase(const DropDatabaseNode &n, Session &s)
     return QueryResult::ok("Database '" + n.name + "' dropped.");
 }
 
-QueryResult Executor::execShowDatabases(Session & /*s*/)
+QueryResult Executor::execShowDatabases(Session &s)
 {
+    requireAuthenticated(s);
     auto dbs = dbMgr_.listDatabases();
     QueryResult r;
     r.type = QueryResult::Type::SELECT;
@@ -379,6 +389,7 @@ QueryResult Executor::execShowDatabases(Session & /*s*/)
 
 QueryResult Executor::execUseDatabase(const UseDatabaseNode &n, Session &s)
 {
+    requireAuthenticated(s);
     if (!dbMgr_.databaseExists(n.name))
         throw DBException(ErrorCode::DB_NOT_FOUND, "Unknown database '" + n.name + "'");
     s.currentDatabase = n.name;
@@ -392,6 +403,7 @@ QueryResult Executor::execUseDatabase(const UseDatabaseNode &n, Session &s)
 QueryResult Executor::execCreateTable(const CreateTableNode &n, Session &s)
 {
     std::string db = resolveDb(n.database, s);
+    checkPermission(s, db, "*", Privilege::ALL);  // 需要对该库有 ALL 权限
     if (n.ifNotExists && tblMgr_.tableExists(db, n.def.name))
         return QueryResult::ok("Table '" + n.def.name + "' already exists (skipped).");
     tblMgr_.createTable(db, n.def);
@@ -401,6 +413,7 @@ QueryResult Executor::execCreateTable(const CreateTableNode &n, Session &s)
 QueryResult Executor::execDropTable(const DropTableNode &n, Session &s)
 {
     std::string db = resolveDb(n.database, s);
+    checkPermission(s, db, "*", Privilege::ALL);  // 需要对该库有 ALL 权限
     if (n.ifExists && !tblMgr_.tableExists(db, n.table))
         return QueryResult::ok("Table '" + n.table + "' does not exist (skipped).");
     tblMgr_.dropTable(db, n.table);
@@ -410,6 +423,7 @@ QueryResult Executor::execDropTable(const DropTableNode &n, Session &s)
 QueryResult Executor::execShowTables(Session &s)
 {
     std::string db = resolveDb("", s);
+    requireAuthenticated(s);
     auto tables = tblMgr_.listTables(db);
     QueryResult r;
     r.type = QueryResult::Type::SELECT;
@@ -422,6 +436,7 @@ QueryResult Executor::execShowTables(Session &s)
 
 QueryResult Executor::execDescribeTable(const DescribeTableNode &n, Session &s)
 {
+    requireAuthenticated(s);
     std::string db = resolveDb(n.database, s);
     auto defOpt = tblMgr_.describeTable(db, n.table);
     if (!defOpt)
@@ -483,6 +498,7 @@ QueryResult Executor::execDescribeTable(const DescribeTableNode &n, Session &s)
 QueryResult Executor::execAlterTable(const AlterTableNode &n, Session &s)
 {
     std::string db = resolveDb(n.database, s);
+    checkPermission(s, db, "*", Privilege::ALL);
     switch (n.action)
     {
     case AlterAction::ADD_COLUMN:
@@ -505,6 +521,7 @@ QueryResult Executor::execAlterTable(const AlterTableNode &n, Session &s)
 QueryResult Executor::execCreateIndex(const CreateIndexNode &n, Session &s)
 {
     std::string db = resolveDb(n.database, s);
+    checkPermission(s, db, "*", Privilege::ALL);
     idxMgr_.createIndex(db, n.table, n.indexName, n.columns, n.unique);
     return QueryResult::ok("Index '" + n.indexName + "' created (schema only).");
 }
@@ -512,6 +529,7 @@ QueryResult Executor::execCreateIndex(const CreateIndexNode &n, Session &s)
 QueryResult Executor::execDropIndex(const DropIndexNode &n, Session &s)
 {
     std::string db = resolveDb(n.database, s);
+    checkPermission(s, db, "*", Privilege::ALL);
     idxMgr_.dropIndex(db, n.table, n.indexName);
     return QueryResult::ok("Index '" + n.indexName + "' dropped.");
 }
@@ -1278,6 +1296,7 @@ QueryResult Executor::execDelete(const DeleteNode &n, Session &s)
 
 QueryResult Executor::execBegin(Session &s)
 {
+    requireAuthenticated(s);
     if (!s.transactionId.empty())
         return QueryResult::err(ErrorCode::TRANSACTION_CONFLICT,
                                 "Transaction already active. COMMIT or ROLLBACK first.");
@@ -1336,8 +1355,8 @@ QueryResult Executor::execRollback(Session &s)
 
 QueryResult Executor::execCreateUser(const CreateUserNode &n, Session &s)
 {
-    // 只有 root 或匿名会话可以创建用户
-    if (!s.user.empty() && s.user != "root")
+    requireAuthenticated(s);
+    if (s.user != "root")
         throw DBException(ErrorCode::PERMISSION_DENIED,
                           "Only root can create users");
     userMgr_.createUser(n.username, n.password);
@@ -1346,7 +1365,8 @@ QueryResult Executor::execCreateUser(const CreateUserNode &n, Session &s)
 
 QueryResult Executor::execDropUser(const DropUserNode &n, Session &s)
 {
-    if (!s.user.empty() && s.user != "root")
+    requireAuthenticated(s);
+    if (s.user != "root")
         throw DBException(ErrorCode::PERMISSION_DENIED,
                           "Only root can drop users");
     userMgr_.dropUser(n.username);
@@ -1355,7 +1375,8 @@ QueryResult Executor::execDropUser(const DropUserNode &n, Session &s)
 
 QueryResult Executor::execGrant(const GrantNode &n, Session &s)
 {
-    if (!s.user.empty() && s.user != "root")
+    requireAuthenticated(s);
+    if (s.user != "root")
         throw DBException(ErrorCode::PERMISSION_DENIED,
                           "Only root can grant privileges");
     userMgr_.grantPrivilege(n.username, n.database, n.table, n.privileges);
@@ -1364,7 +1385,8 @@ QueryResult Executor::execGrant(const GrantNode &n, Session &s)
 
 QueryResult Executor::execRevoke(const RevokeNode &n, Session &s)
 {
-    if (!s.user.empty() && s.user != "root")
+    requireAuthenticated(s);
+    if (s.user != "root")
         throw DBException(ErrorCode::PERMISSION_DENIED,
                           "Only root can revoke privileges");
     userMgr_.revokePrivilege(n.username, n.database, n.table, n.privileges);
@@ -1476,6 +1498,7 @@ static std::string genCreateTableSQL(const TableDefinition& def) {
 
 QueryResult Executor::execBackupDatabase(const BackupDatabaseNode& n, Session& s)
 {
+    checkPermission(s, "*", "*", Privilege::ALL);  // 仅 root 或全局 ALL 权限
     std::string db = n.database.empty() ? resolveDb("", s) : n.database;
     if (n.filepath.empty())
         throw DBException(ErrorCode::FILE_IO_ERROR, "No output file specified for BACKUP");

@@ -222,6 +222,7 @@ static void test_transaction_commit() {
     std::cout << "[test_transaction_commit]\n";
 
     Session sess;
+    sess.user = "root";
     sess.currentDatabase = "secdb";
 
     // 计算初始行数
@@ -249,6 +250,7 @@ static void test_transaction_rollback_insert() {
     std::cout << "[test_transaction_rollback_insert]\n";
 
     Session sess;
+    sess.user = "root";
     sess.currentDatabase = "secdb";
 
     auto r = execOk("SELECT * FROM items", sess);
@@ -277,6 +279,7 @@ static void test_transaction_rollback_update() {
     std::cout << "[test_transaction_rollback_update]\n";
 
     Session sess;
+    sess.user = "root";
     sess.currentDatabase = "secdb";
 
     // 查出 apple 当前 qty
@@ -310,6 +313,7 @@ static void test_transaction_rollback_delete() {
     std::cout << "[test_transaction_rollback_delete]\n";
 
     Session sess;
+    sess.user = "root";
     sess.currentDatabase = "secdb";
 
     auto r = execOk("SELECT * FROM items", sess);
@@ -344,6 +348,7 @@ static void test_nested_begin() {
     std::cout << "[test_nested_begin]\n";
 
     Session sess;
+    sess.user = "root";
     sess.currentDatabase = "secdb";
 
     execOk("BEGIN", sess);
@@ -368,7 +373,7 @@ int main() {
 
     // root 会话直接用空 user（匿名 = 不检查权限），
     // 也可以 CONNECT 后使用 root 用户，两者均可
-    rootSess.user = "";  // 匿名模式，享有完全权限
+    rootSess.user = "root";  // root 拥有所有权限
 
     test_user_management();
     test_authentication();

@@ -28,7 +28,7 @@ static int gPassed = 0, gFailed = 0;
 // ── 全局引擎 ─────────────────────────────────────────────────────────────────
 static const std::string DATA_DIR = "./test_data_comprehensive";
 static DBEngine* gEng = nullptr;
-static Session   rootSess;   // 匿名(无限制)会话
+static Session   rootSess;   // root 会话（所有权限）
 
 static QueryResult execOk(const std::string& sql, Session& sess) {
     auto r = gEng->execute(sql, sess);
@@ -57,7 +57,7 @@ static std::string fvs(const FieldValue& v) {
 // 0. 环境初始化
 // ════════════════════════════════════════════════════════════════════════════
 static void setup() {
-    rootSess.user = "";  // 匿名模式跳过权限检查
+    rootSess.user = "root";  // root 拥有所有权限
     auto r = gEng->execute("CREATE DATABASE compdb", rootSess);
     ASSERT_TRUE(r.type != QueryResult::Type::ERROR);
     rootSess.currentDatabase = "compdb";
@@ -161,7 +161,7 @@ static void test_ddl_comprehensive() {
 
     // USE 不存在数据库
     Session badDbSess;
-    badDbSess.user = "";
+    badDbSess.user = "root";
     execErr("USE nonexistent_db", badDbSess);
 
     // CREATE TABLE - 各种数据类型
@@ -443,7 +443,7 @@ static void test_transaction_commit() {
     execOk("CREATE TABLE txtest (id INT PRIMARY KEY AUTO_INCREMENT, val VARCHAR(50))", rootSess);
 
     Session s;
-    s.user = "";
+    s.user = "root";
     s.currentDatabase = "compdb";
 
     execOk("BEGIN", s);
@@ -464,7 +464,7 @@ static void test_transaction_rollback_insert() {
     auto before = execOk("SELECT * FROM txtest", rootSess).rowCount;
 
     Session s;
-    s.user = "";
+    s.user = "root";
     s.currentDatabase = "compdb";
 
     execOk("BEGIN", s);
@@ -491,7 +491,7 @@ static void test_transaction_rollback_update() {
     ASSERT_EQ(orig.rowCount, 1);
 
     Session s;
-    s.user = "";
+    s.user = "root";
     s.currentDatabase = "compdb";
 
     execOk("BEGIN", s);
@@ -520,7 +520,7 @@ static void test_transaction_rollback_delete() {
     int before = beforeR.rowCount;
 
     Session s;
-    s.user = "";
+    s.user = "root";
     s.currentDatabase = "compdb";
 
     execOk("BEGIN", s);
@@ -543,7 +543,7 @@ static void test_nested_begin() {
     std::cout << "[test_nested_begin]\n";
 
     Session s;
-    s.user = "";
+    s.user = "root";
     s.currentDatabase = "compdb";
 
     execOk("BEGIN", s);
@@ -569,7 +569,7 @@ static void test_wal_crash_recovery() {
     {
         DBEngine eng1(crashDir);
         Session s;
-        s.user = "";
+        s.user = "root";
         eng1.execute("CREATE DATABASE crashdb", s);
         s.currentDatabase = "crashdb";
         eng1.execute("CREATE TABLE crash_log (id INT PRIMARY KEY AUTO_INCREMENT, msg VARCHAR(100))", s);
@@ -586,7 +586,7 @@ static void test_wal_crash_recovery() {
     {
         DBEngine eng2(crashDir);
         Session s;
-        s.user = "";
+        s.user = "root";
         s.currentDatabase = "crashdb";
 
         auto r = eng2.execute("SELECT * FROM crash_log", s);
@@ -601,7 +601,7 @@ static void test_wal_crash_recovery() {
     {
         DBEngine eng3(crashDir);
         Session s;
-        s.user = "";
+        s.user = "root";
         s.currentDatabase = "crashdb";
 
         eng3.execute("INSERT INTO crash_log (msg) VALUES ('post_recovery_row')", s);
