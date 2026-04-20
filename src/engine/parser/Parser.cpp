@@ -334,9 +334,50 @@ public:
             return e;
         }
 
+        // [NOT] BETWEEN val1 AND val2  →  col >= val1 AND col <= val2
+        if (check(TokenType::BETWEEN)) {
+            advance();
+            FieldValue lo = parseLiteral();
+            expect(TokenType::AND, "Expected AND after BETWEEN lower bound");
+            FieldValue hi = parseLiteral();
+
+            auto loLit = std::make_shared<WhereExpr>();
+            loLit->kind  = WhereExpr::Kind::LITERAL; loLit->value = lo;
+            auto hiLit = std::make_shared<WhereExpr>();
+            hiLit->kind  = WhereExpr::Kind::LITERAL; hiLit->value = hi;
+
+            // col >= lo
+            auto geE = std::make_shared<WhereExpr>();
+            geE->kind = WhereExpr::Kind::COMPARISON;
+            geE->op   = ExprOp::GE;
+            geE->left = colExpr; geE->right = loLit;
+
+            // col <= hi (copy of colExpr)
+            auto colExpr2 = std::make_shared<WhereExpr>(*colExpr);
+            auto leE = std::make_shared<WhereExpr>();
+            leE->kind = WhereExpr::Kind::COMPARISON;
+            leE->op   = ExprOp::LE;
+            leE->left = colExpr2; leE->right = hiLit;
+
+            // AND
+            auto andE = std::make_shared<WhereExpr>();
+            andE->kind  = WhereExpr::Kind::LOGICAL;
+            andE->op    = ExprOp::AND;
+            andE->left  = geE; andE->right = leE;
+
+            if (negated) {
+                auto notE = std::make_shared<WhereExpr>();
+                notE->kind = WhereExpr::Kind::LOGICAL;
+                notE->op   = ExprOp::NOT;
+                notE->left = andE;
+                return notE;
+            }
+            return andE;
+        }
+
         if (negated)
             throw DBException(ErrorCode::SQL_SYNTAX_ERROR,
-                              "Expected IN or LIKE after NOT");
+                              "Expected IN, LIKE, or BETWEEN after NOT");
 
         // comparison operator
         ExprOp op;

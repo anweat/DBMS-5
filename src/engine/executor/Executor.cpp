@@ -95,6 +95,85 @@ static FieldValue coerce(const FieldValue& v, const ColumnDefinition& col) {
 }
 
 // ============================================================
+// 完整性约束检查
+// ============================================================
+
+// 比较两个 FieldValue 是否相等（用于约束检查）
+static bool fvEqual(const FieldValue& a, const FieldValue& b) {
+    if (a.index() != b.index()) return false;
+    if (std::holds_alternative<std::monostate>(a)) return true; // NULL==NULL 在约束中视为不同
+    if (std::holds_alternative<int64_t>(a))
+        return std::get<int64_t>(a) == std::get<int64_t>(b);
+    if (std::holds_alternative<double>(a))
+        return std::get<double>(a) == std::get<double>(b);
+    if (std::holds_alternative<bool>(a))
+        return std::get<bool>(a) == std::get<bool>(b);
+    if (std::holds_alternative<std::string>(a))
+        return std::get<std::string>(a) == std::get<std::string>(b);
+    return false;
+}
+
+// 检查唯一性 / PK 约束；excludeOffset=-1 表示不排除任何行（INSERT）
+// excludeOffset >= 0 表示跳过该物理偏移的行（UPDATE）
+static void checkUniqueConstraints(
+    RecordManager& recMgr,
+    const std::string& db,
+    const std::string& table,
+    const TableDefinition& def,
+    const std::map<std::string, FieldValue>& record,
+    int64_t excludeOffset = -1)
+{
+    // 只检查有 PK 或 UNIQUE 的列
+    std::vector<const ColumnDefinition*> keyCols;
+    for (const auto& col : def.columns)
+        if (col.primaryKey || col.unique) keyCols.push_back(&col);
+    if (keyCols.empty()) return;
+
+    // NULL 值不参与唯一性检查（SQL 标准：NULL != NULL）
+    for (const auto* kc : keyCols) {
+        auto it = record.find(kc->name);
+        if (it == record.end() || std::holds_alternative<std::monostate>(it->second))
+            continue; // NULL 不检查
+    }
+
+    auto withOffsets = recMgr.scanWithOffsets(db, table);
+    for (const auto& [offset, row] : withOffsets) {
+        if (offset == excludeOffset) continue;
+        // 构建 map
+        std::map<std::string, FieldValue> existing;
+        for (size_t i = 0; i < def.columns.size() && i < row.size(); ++i)
+            existing[def.columns[i].name] = row[i];
+
+        for (const auto* kc : keyCols) {
+            auto newIt = record.find(kc->name);
+            if (newIt == record.end()) continue;
+            if (std::holds_alternative<std::monostate>(newIt->second)) continue;
+            auto exIt = existing.find(kc->name);
+            if (exIt == existing.end()) continue;
+            if (fvEqual(newIt->second, exIt->second)) {
+                std::string kind = kc->primaryKey ? "PRIMARY KEY" : "UNIQUE";
+                throw DBException(ErrorCode::DUPLICATE_KEY,
+                    "Duplicate entry for " + kind + " column '" + kc->name + "'");
+            }
+        }
+    }
+}
+
+// VARCHAR 长度检查 + 截断
+static FieldValue validateField(const FieldValue& v, const ColumnDefinition& col) {
+    if (col.type == FieldType::VARCHAR
+        && std::holds_alternative<std::string>(v))
+    {
+        const auto& s = std::get<std::string>(v);
+        if (col.length > 0 && static_cast<int>(s.size()) > col.length)
+            throw DBException(ErrorCode::COLUMN_INVALID,
+                "Value too long for column '" + col.name
+                + "' (max " + std::to_string(col.length) + ")");
+    }
+    return v;
+}
+
+// ============================================================
 // execute 入口：按 AST 类型分发
 // ============================================================
 
@@ -353,7 +432,7 @@ QueryResult Executor::execInsert(const InsertNode& n, Session& s) {
             }
         }
 
-        // 补全缺失列的默认值 / NULL 检查
+        // 补全缺失列的默认值 / NOT NULL 检查 / VARCHAR 长度检查
         for (const auto& col : def.columns) {
             if (record.find(col.name) == record.end()) {
                 if (!col.defaultValue.empty()) {
@@ -370,8 +449,13 @@ QueryResult Executor::execInsert(const InsertNode& n, Session& s) {
                     && std::holds_alternative<std::monostate>(record[col.name]))
                     throw DBException(ErrorCode::CONSTRAINT_VIOLATION,
                                       "Column '" + col.name + "' cannot be NULL");
+                // VARCHAR 长度
+                record[col.name] = validateField(record[col.name], col);
             }
         }
+
+        // UNIQUE / PRIMARY KEY 唯一性检查
+        checkUniqueConstraints(recMgr_, db, n.table, def, record);
 
         recMgr_.insert(db, n.table, record);
         ++affected;
@@ -601,6 +685,17 @@ QueryResult Executor::execUpdate(const UpdateNode& n, Session& s) {
     const auto& def = *defOpt;
 
     ExprEvaluator eval;
+
+    // 先验证 SET 列名合法
+    for (const auto& a : n.assignments) {
+        bool found = false;
+        for (const auto& col : def.columns)
+            if (col.name == a.columnName) { found = true; break; }
+        if (!found)
+            throw DBException(ErrorCode::COLUMN_NOT_FOUND,
+                              "Unknown column '" + a.columnName + "' in SET clause");
+    }
+
     auto withOffsets = recMgr_.scanWithOffsets(db, n.table);
     int affected = 0;
 
@@ -608,15 +703,30 @@ QueryResult Executor::execUpdate(const UpdateNode& n, Session& s) {
         auto m = rowToMap(def, row);
         if (n.where && !eval.evaluate(*n.where, m)) continue;
 
-        // 应用赋值
+        // 应用赋值（含类型转换 + 约束检查）
         for (const auto& a : n.assignments) {
-            // 找列定义以做类型转换
-            for (const auto& col : def.columns)
-                if (col.name == a.columnName) {
-                    m[a.columnName] = coerce(a.value, col);
-                    break;
-                }
+            for (const auto& col : def.columns) {
+                if (col.name != a.columnName) continue;
+
+                FieldValue newVal = coerce(a.value, col);
+
+                // NOT NULL 检查
+                if (!col.nullable && !col.autoIncrement
+                    && std::holds_alternative<std::monostate>(newVal))
+                    throw DBException(ErrorCode::CONSTRAINT_VIOLATION,
+                        "Column '" + col.name + "' cannot be NULL");
+
+                // VARCHAR 长度检查
+                newVal = validateField(newVal, col);
+
+                m[a.columnName] = std::move(newVal);
+                break;
+            }
         }
+
+        // UNIQUE / PK 唯一性检查（排除自身行）
+        checkUniqueConstraints(recMgr_, db, n.table, def, m, offset);
+
         recMgr_.update(db, n.table, offset, m);
         ++affected;
     }
