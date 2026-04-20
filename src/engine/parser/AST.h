@@ -188,6 +188,7 @@ struct SelectNode : ASTNode {
     std::vector<OrderByExpr>           orderBy;
     int                                limit  = -1; // -1 表示无 LIMIT
     int                                offset =  0;
+    bool                               distinct = false;
 };
 
 struct UpdateAssignment {

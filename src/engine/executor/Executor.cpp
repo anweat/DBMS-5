@@ -2,6 +2,7 @@
 #include "ExprEvaluator.h"
 #include <algorithm>
 #include <sstream>
+#include <set>
 
 // ============================================================
 // 构造 / 初始化
@@ -378,6 +379,103 @@ QueryResult Executor::execDropIndex(const DropIndexNode& n, Session& s) {
 }
 
 // ============================================================
+// 外键约束检查
+// ============================================================
+
+// INSERT/UPDATE 时检查：被引用表中必须存在对应的行
+static void checkFKParentExists(
+    TableManager& tblMgr, RecordManager& recMgr,
+    const std::string& db,
+    const TableDefinition& childDef,
+    const std::map<std::string, FieldValue>& record)
+{
+    for (const auto& fk : childDef.foreignKeys) {
+        std::vector<FieldValue> childVals;
+        bool allNull = true;
+        for (const auto& col : fk.columns) {
+            auto it = record.find(col);
+            FieldValue v = (it != record.end()) ? it->second : std::monostate{};
+            if (!std::holds_alternative<std::monostate>(v)) allNull = false;
+            childVals.push_back(v);
+        }
+        if (allNull) continue;
+
+        auto parentDefOpt = tblMgr.describeTable(db, fk.refTable);
+        if (!parentDefOpt)
+            throw DBException(ErrorCode::TABLE_NOT_FOUND,
+                "FK: Referenced table '" + fk.refTable + "' not found");
+
+        auto parentRows = recMgr.scan(db, fk.refTable);
+        bool found = false;
+        for (const auto& pr : parentRows) {
+            bool match = true;
+            for (size_t i = 0; i < fk.refColumns.size() && i < childVals.size(); ++i) {
+                FieldValue pv = std::monostate{};
+                for (size_t ci = 0; ci < parentDefOpt->columns.size(); ++ci) {
+                    if (parentDefOpt->columns[ci].name == fk.refColumns[i]) {
+                        pv = (ci < pr.size()) ? pr[ci] : std::monostate{};
+                        break;
+                    }
+                }
+                if (std::holds_alternative<std::monostate>(childVals[i]) !=
+                    std::holds_alternative<std::monostate>(pv)) { match = false; break; }
+                if (!std::holds_alternative<std::monostate>(childVals[i])) {
+                    if (fvToStr(childVals[i]) != fvToStr(pv)) { match = false; break; }
+                }
+            }
+            if (match) { found = true; break; }
+        }
+        if (!found) {
+            throw DBException(ErrorCode::FOREIGN_KEY_VIOLATION,
+                "Foreign key constraint '" + fk.constraintName
+                + "': referenced row not found in '" + fk.refTable + "'");
+        }
+    }
+}
+
+// DELETE/UPDATE 时检查：子表中不能有引用当前行的记录
+static void checkFKChildAbsent(
+    TableManager& tblMgr, RecordManager& recMgr,
+    const std::string& db,
+    const TableDefinition& parentDef,
+    const std::map<std::string, FieldValue>& deletedRecord)
+{
+    auto allTables = tblMgr.listTables(db);
+    for (const auto& childTblName : allTables) {
+        auto childDefOpt = tblMgr.describeTable(db, childTblName);
+        if (!childDefOpt) continue;
+        for (const auto& fk : childDefOpt->foreignKeys) {
+            if (fk.refTable != parentDef.name) continue;
+            std::vector<FieldValue> refVals;
+            for (const auto& rc : fk.refColumns) {
+                auto it = deletedRecord.find(rc);
+                refVals.push_back(it != deletedRecord.end() ? it->second : std::monostate{});
+            }
+            auto childRows = recMgr.scan(db, childTblName);
+            for (const auto& cr : childRows) {
+                bool match = true;
+                for (size_t i = 0; i < fk.columns.size() && i < refVals.size(); ++i) {
+                    FieldValue cv = std::monostate{};
+                    for (size_t ci = 0; ci < childDefOpt->columns.size(); ++ci) {
+                        if (childDefOpt->columns[ci].name == fk.columns[i]) {
+                            cv = (ci < cr.size()) ? cr[ci] : std::monostate{};
+                            break;
+                        }
+                    }
+                    if (std::holds_alternative<std::monostate>(cv)) { match = false; break; }
+                    if (fvToStr(cv) != fvToStr(refVals[i])) { match = false; break; }
+                }
+                if (match) {
+                    throw DBException(ErrorCode::FOREIGN_KEY_VIOLATION,
+                        "Cannot delete/update: foreign key constraint from '"
+                        + childTblName + "' references this row");
+                }
+            }
+        }
+    }
+}
+
+// ============================================================
 // DML – INSERT
 // ============================================================
 
@@ -457,7 +555,11 @@ QueryResult Executor::execInsert(const InsertNode& n, Session& s) {
         // UNIQUE / PRIMARY KEY 唯一性检查
         checkUniqueConstraints(recMgr_, db, n.table, def, record);
 
+        // FK parent 存在检查
+        checkFKParentExists(tblMgr_, recMgr_, db, def, record);
+
         recMgr_.insert(db, n.table, record);
+        idxMgr_.onInsert(db, n.table, record, recMgr_.lastInsertOffset());
         ++affected;
     }
 
@@ -477,124 +579,190 @@ QueryResult Executor::execSelect(const SelectNode& n, Session& s) {
         throw DBException(ErrorCode::TABLE_NOT_FOUND,
                           "Unknown table '" + n.table + "'");
     const auto& def = *defOpt;
-
     ExprEvaluator eval;
 
-    // 1. 全表扫描 + WHERE 过滤
+    // ── 1. 全表扫描 + WHERE 过滤 ──────────────────────────────────────
     auto rawRows = recMgr_.scan(db, n.table);
-    std::vector<std::map<std::string,FieldValue>> filtered;
+    std::vector<std::map<std::string, FieldValue>> filtered;
+    filtered.reserve(rawRows.size());
     for (const auto& row : rawRows) {
         auto m = rowToMap(def, row);
         if (!n.where || eval.evaluate(*n.where, m))
             filtered.push_back(std::move(m));
     }
 
-    // 2. 聚合函数处理（简化：仅支持无 GROUP BY 的全局聚合）
+    // ── 2. 确定是否需要聚合/分组 ──────────────────────────────────────
     bool hasAgg = false;
     for (const auto& sc : n.columns)
         if (sc.kind == SelectColumn::Kind::AGGREGATE) { hasAgg = true; break; }
+    bool needGroup = hasAgg || !n.groupBy.empty();
 
-    if (hasAgg && n.groupBy.empty()) {
-        QueryResult r;
-        r.type = QueryResult::Type::SELECT;
-        Row aggRow;
-        for (const auto& sc : n.columns) {
-            if (sc.kind != SelectColumn::Kind::AGGREGATE) continue;
-            std::string name = sc.aggregate.alias.empty()
-                ? std::string(sc.aggregate.func == AggFunc::COUNT ? "COUNT" :
-                              sc.aggregate.func == AggFunc::SUM   ? "SUM"   :
-                              sc.aggregate.func == AggFunc::MAX   ? "MAX"   :
-                              sc.aggregate.func == AggFunc::MIN   ? "MIN"   : "AVG")
-                  + "(" + sc.aggregate.column + ")"
-                : sc.aggregate.alias;
+    // ── 辅助 lambda ───────────────────────────────────────────────────
+    auto aggName = [](const AggregateExpr& agg) -> std::string {
+        if (!agg.alias.empty()) return agg.alias;
+        std::string fn;
+        switch (agg.func) {
+            case AggFunc::COUNT: fn = "COUNT"; break;
+            case AggFunc::SUM:   fn = "SUM";   break;
+            case AggFunc::MAX:   fn = "MAX";   break;
+            case AggFunc::MIN:   fn = "MIN";   break;
+            case AggFunc::AVG:   fn = "AVG";   break;
+        }
+        return fn + "(" + agg.column + ")";
+    };
 
-            switch (sc.aggregate.func) {
-                case AggFunc::COUNT: {
-                    int64_t cnt = 0;
-                    if (sc.aggregate.column == "*") {
-                        cnt = static_cast<int64_t>(filtered.size());
-                    } else {
-                        for (const auto& m : filtered) {
-                            auto it = m.find(sc.aggregate.column);
-                            if (it != m.end() && !std::holds_alternative<std::monostate>(it->second))
-                                ++cnt;
-                        }
-                    }
-                    r.columns.push_back({name, FieldType::INTEGER});
-                    aggRow.push_back(FieldValue{cnt});
-                    break;
+    auto aggType = [](const AggregateExpr& agg) -> FieldType {
+        return (agg.func == AggFunc::COUNT) ? FieldType::INTEGER : FieldType::DOUBLE;
+    };
+
+    // 对一组行计算单个聚合
+    using RowPtrVec = std::vector<const std::map<std::string, FieldValue>*>;
+    auto computeAgg = [&](const AggregateExpr& agg, const RowPtrVec& rows) -> FieldValue {
+        switch (agg.func) {
+            case AggFunc::COUNT: {
+                if (agg.column == "*")
+                    return static_cast<int64_t>(rows.size());
+                int64_t cnt = 0;
+                for (const auto* rm : rows) {
+                    auto it = rm->find(agg.column);
+                    if (it != rm->end() && !std::holds_alternative<std::monostate>(it->second))
+                        ++cnt;
                 }
-                case AggFunc::SUM: case AggFunc::AVG: {
-                    double sum = 0;
-                    int64_t cnt2 = 0;
-                    for (const auto& m : filtered) {
-                        auto it = m.find(sc.aggregate.column);
-                        if (it != m.end()) {
-                            if (std::holds_alternative<int64_t>(it->second))
-                                sum += static_cast<double>(std::get<int64_t>(it->second));
-                            else if (std::holds_alternative<double>(it->second))
-                                sum += std::get<double>(it->second);
-                            ++cnt2;
-                        }
-                    }
-                    r.columns.push_back({name, FieldType::DOUBLE});
-                    aggRow.push_back(FieldValue{sc.aggregate.func == AggFunc::AVG && cnt2 > 0
-                                                ? sum / cnt2 : sum});
-                    break;
+                return cnt;
+            }
+            case AggFunc::SUM: case AggFunc::AVG: {
+                double sum = 0; int64_t cnt = 0;
+                for (const auto* rm : rows) {
+                    auto it = rm->find(agg.column);
+                    if (it == rm->end()) continue;
+                    if (std::holds_alternative<int64_t>(it->second))
+                        sum += static_cast<double>(std::get<int64_t>(it->second)), ++cnt;
+                    else if (std::holds_alternative<double>(it->second))
+                        sum += std::get<double>(it->second), ++cnt;
                 }
-                case AggFunc::MAX: case AggFunc::MIN: {
-                    FieldValue best = std::monostate{};
-                    for (const auto& m : filtered) {
-                        auto it = m.find(sc.aggregate.column);
-                        if (it == m.end() || std::holds_alternative<std::monostate>(it->second))
-                            continue;
-                        if (std::holds_alternative<std::monostate>(best)) {
-                            best = it->second;
+                if (agg.func == AggFunc::AVG) return cnt ? sum / cnt : 0.0;
+                return sum;
+            }
+            case AggFunc::MAX: case AggFunc::MIN: {
+                FieldValue best = std::monostate{};
+                for (const auto* rm : rows) {
+                    auto it = rm->find(agg.column);
+                    if (it == rm->end() || std::holds_alternative<std::monostate>(it->second)) continue;
+                    if (std::holds_alternative<std::monostate>(best)) { best = it->second; continue; }
+                    bool pick;
+                    if (std::holds_alternative<int64_t>(it->second) && std::holds_alternative<int64_t>(best))
+                        pick = agg.func == AggFunc::MAX
+                            ? std::get<int64_t>(it->second) > std::get<int64_t>(best)
+                            : std::get<int64_t>(it->second) < std::get<int64_t>(best);
+                    else {
+                        double da = std::holds_alternative<int64_t>(it->second)
+                            ? static_cast<double>(std::get<int64_t>(it->second))
+                            : (std::holds_alternative<double>(it->second) ? std::get<double>(it->second) : 0.0);
+                        double db2 = std::holds_alternative<int64_t>(best)
+                            ? static_cast<double>(std::get<int64_t>(best))
+                            : (std::holds_alternative<double>(best) ? std::get<double>(best) : 0.0);
+                        if (std::holds_alternative<std::string>(it->second) && std::holds_alternative<std::string>(best)) {
+                            pick = agg.func == AggFunc::MAX
+                                ? std::get<std::string>(it->second) > std::get<std::string>(best)
+                                : std::get<std::string>(it->second) < std::get<std::string>(best);
                         } else {
-                            bool isBetter;
-                            if (std::holds_alternative<int64_t>(it->second)
-                                && std::holds_alternative<int64_t>(best))
-                                isBetter = sc.aggregate.func == AggFunc::MAX
-                                    ? std::get<int64_t>(it->second) > std::get<int64_t>(best)
-                                    : std::get<int64_t>(it->second) < std::get<int64_t>(best);
-                            else if (std::holds_alternative<double>(it->second)
-                                     || std::holds_alternative<double>(best)) {
-                                double a = std::holds_alternative<int64_t>(it->second)
-                                    ? static_cast<double>(std::get<int64_t>(it->second))
-                                    : std::get<double>(it->second);
-                                double b = std::holds_alternative<int64_t>(best)
-                                    ? static_cast<double>(std::get<int64_t>(best))
-                                    : std::get<double>(best);
-                                isBetter = sc.aggregate.func == AggFunc::MAX ? a > b : a < b;
-                            } else {
-                                std::string a = fvToStr(it->second), b = fvToStr(best);
-                                isBetter = sc.aggregate.func == AggFunc::MAX ? a > b : a < b;
-                            }
-                            if (isBetter) best = it->second;
+                            pick = agg.func == AggFunc::MAX ? da > db2 : da < db2;
                         }
                     }
-                    r.columns.push_back({name, FieldType::DOUBLE});
-                    aggRow.push_back(best);
-                    break;
+                    if (pick) best = it->second;
                 }
+                return best;
             }
         }
-        if (!aggRow.empty()) r.rows.push_back(aggRow);
-        r.rowCount = static_cast<int>(r.rows.size());
-        return r;
+        return std::monostate{};
+    };
+
+    // ── 3. 确定输出列 ─────────────────────────────────────────────────
+    std::vector<ColumnMeta> outCols;
+    bool hasWildcard = false;
+    for (const auto& sc : n.columns)
+        if (sc.kind == SelectColumn::Kind::WILDCARD) { hasWildcard = true; break; }
+
+    if (hasWildcard) {
+        for (const auto& col : def.columns)
+            outCols.push_back({col.name, col.type});
+    } else {
+        for (const auto& sc : n.columns) {
+            if (sc.kind == SelectColumn::Kind::COLUMN_REF) {
+                std::string nm = sc.alias.empty() ? sc.columnName : sc.alias;
+                FieldType ft = FieldType::VARCHAR;
+                for (const auto& col : def.columns)
+                    if (col.name == sc.columnName) { ft = col.type; break; }
+                outCols.push_back({nm, ft});
+            } else if (sc.kind == SelectColumn::Kind::AGGREGATE) {
+                outCols.push_back({aggName(sc.aggregate), aggType(sc.aggregate)});
+            }
+        }
     }
 
-    // 3. ORDER BY
+    // ── 4. 聚合/GROUP BY 路径 ─────────────────────────────────────────
+    if (needGroup) {
+        using GroupKey = std::vector<std::string>;
+        std::map<GroupKey, RowPtrVec> groupMap;
+        std::vector<GroupKey>         keyOrder;
+
+        if (n.groupBy.empty()) {
+            GroupKey emptyKey;
+            for (const auto& m : filtered) groupMap[emptyKey].push_back(&m);
+            keyOrder.push_back(emptyKey);
+        } else {
+            for (const auto& m : filtered) {
+                GroupKey gk;
+                for (const auto& gc : n.groupBy) {
+                    auto it = m.find(gc);
+                    gk.push_back(it != m.end() ? fvToStr(it->second) : "");
+                }
+                if (!groupMap.count(gk)) keyOrder.push_back(gk);
+                groupMap[gk].push_back(&m);
+            }
+        }
+
+        std::vector<std::map<std::string, FieldValue>> aggRows;
+        for (const auto& gk : keyOrder) {
+            const auto& rows = groupMap.at(gk);
+            std::map<std::string, FieldValue> repr;
+
+            if (!n.groupBy.empty() && !rows.empty()) {
+                for (const auto& gc : n.groupBy) {
+                    auto it = rows[0]->find(gc);
+                    if (it != rows[0]->end()) repr[gc] = it->second;
+                }
+            }
+
+            for (const auto& sc : n.columns) {
+                if (sc.kind != SelectColumn::Kind::AGGREGATE) continue;
+                repr[aggName(sc.aggregate)] = computeAgg(sc.aggregate, rows);
+            }
+
+            if (n.having && !eval.evaluate(*n.having, repr)) continue;
+
+            if (!rows.empty()) {
+                for (const auto& col : def.columns) {
+                    if (!repr.count(col.name)) {
+                        auto it = rows[0]->find(col.name);
+                        if (it != rows[0]->end()) repr[col.name] = it->second;
+                    }
+                }
+            }
+            aggRows.push_back(std::move(repr));
+        }
+        filtered = std::move(aggRows);
+    }
+
+    // ── 5. ORDER BY ───────────────────────────────────────────────────
     if (!n.orderBy.empty()) {
         std::stable_sort(filtered.begin(), filtered.end(),
             [&](const std::map<std::string,FieldValue>& a,
                 const std::map<std::string,FieldValue>& b) {
                 for (const auto& ob : n.orderBy) {
-                    auto ia = a.find(ob.columnName);
-                    auto ib = b.find(ob.columnName);
+                    auto ia = a.find(ob.columnName); auto ib = b.find(ob.columnName);
                     FieldValue va = (ia != a.end()) ? ia->second : std::monostate{};
                     FieldValue vb = (ib != b.end()) ? ib->second : std::monostate{};
-                    // compare
                     bool aNul = std::holds_alternative<std::monostate>(va);
                     bool bNul = std::holds_alternative<std::monostate>(vb);
                     if (aNul && bNul) continue;
@@ -606,9 +774,11 @@ QueryResult Executor::execSelect(const SelectNode& n, Session& s) {
                                                : std::get<int64_t>(va) > std::get<int64_t>(vb);
                     } else if (std::holds_alternative<double>(va) || std::holds_alternative<double>(vb)) {
                         double da = std::holds_alternative<int64_t>(va)
-                            ? static_cast<double>(std::get<int64_t>(va)) : std::get<double>(va);
+                            ? static_cast<double>(std::get<int64_t>(va))
+                            : (std::holds_alternative<double>(va) ? std::get<double>(va) : 0.0);
                         double db2 = std::holds_alternative<int64_t>(vb)
-                            ? static_cast<double>(std::get<int64_t>(vb)) : std::get<double>(vb);
+                            ? static_cast<double>(std::get<int64_t>(vb))
+                            : (std::holds_alternative<double>(vb) ? std::get<double>(vb) : 0.0);
                         if (da != db2) return ob.ascending ? da < db2 : da > db2;
                     } else {
                         std::string sa = fvToStr(va), sb = fvToStr(vb);
@@ -619,38 +789,18 @@ QueryResult Executor::execSelect(const SelectNode& n, Session& s) {
             });
     }
 
-    // 4. LIMIT / OFFSET
+    // ── 6. LIMIT / OFFSET ─────────────────────────────────────────────
     size_t startIdx = static_cast<size_t>(n.offset >= 0 ? n.offset : 0);
     size_t endIdx   = filtered.size();
     if (n.limit >= 0)
         endIdx = std::min(endIdx, startIdx + static_cast<size_t>(n.limit));
-    if (startIdx >= filtered.size()) startIdx = filtered.size();
+    if (startIdx > filtered.size()) startIdx = filtered.size();
 
-    // 5. 投影：确定输出列
+    // ── 7. 投影 → Row ─────────────────────────────────────────────────
     QueryResult r;
-    r.type = QueryResult::Type::SELECT;
+    r.type    = QueryResult::Type::SELECT;
+    r.columns = outCols;
 
-    // 确定输出列元数据
-    bool hasWildcard = false;
-    for (const auto& sc : n.columns)
-        if (sc.kind == SelectColumn::Kind::WILDCARD) { hasWildcard = true; break; }
-
-    if (hasWildcard) {
-        for (const auto& col : def.columns)
-            r.columns.push_back({col.name, col.type});
-    } else {
-        for (const auto& sc : n.columns) {
-            if (sc.kind == SelectColumn::Kind::COLUMN_REF) {
-                std::string name = sc.alias.empty() ? sc.columnName : sc.alias;
-                FieldType type = FieldType::VARCHAR;
-                for (const auto& col : def.columns)
-                    if (col.name == sc.columnName) { type = col.type; break; }
-                r.columns.push_back({name, type});
-            }
-        }
-    }
-
-    // 6. 生成结果行
     for (size_t i = startIdx; i < endIdx; ++i) {
         const auto& m = filtered[i];
         Row outRow;
@@ -661,13 +811,31 @@ QueryResult Executor::execSelect(const SelectNode& n, Session& s) {
             }
         } else {
             for (const auto& sc : n.columns) {
-                if (sc.kind != SelectColumn::Kind::COLUMN_REF) continue;
-                auto it = m.find(sc.columnName);
-                outRow.push_back(it != m.end() ? it->second : std::monostate{});
+                if (sc.kind == SelectColumn::Kind::COLUMN_REF) {
+                    auto it = m.find(sc.columnName);
+                    outRow.push_back(it != m.end() ? it->second : std::monostate{});
+                } else if (sc.kind == SelectColumn::Kind::AGGREGATE) {
+                    auto it = m.find(aggName(sc.aggregate));
+                    outRow.push_back(it != m.end() ? it->second : std::monostate{});
+                }
             }
         }
         r.rows.push_back(std::move(outRow));
     }
+
+    // ── 8. DISTINCT ───────────────────────────────────────────────────
+    if (n.distinct) {
+        std::vector<Row> dedup;
+        std::set<std::string> seen;
+        for (const auto& row : r.rows) {
+            std::string key;
+            for (const auto& v : row) key += fvToStr(v) + '\x01';
+            if (seen.insert(key).second)
+                dedup.push_back(row);
+        }
+        r.rows = std::move(dedup);
+    }
+
     r.rowCount = static_cast<int>(r.rows.size());
     return r;
 }
@@ -727,6 +895,10 @@ QueryResult Executor::execUpdate(const UpdateNode& n, Session& s) {
         // UNIQUE / PK 唯一性检查（排除自身行）
         checkUniqueConstraints(recMgr_, db, n.table, def, m, offset);
 
+        // FK parent 存在检查 + 索引维护
+        checkFKParentExists(tblMgr_, recMgr_, db, def, m);
+        auto oldMap = rowToMap(def, row);
+        idxMgr_.onUpdate(db, n.table, oldMap, m, offset);
         recMgr_.update(db, n.table, offset, m);
         ++affected;
     }
@@ -755,6 +927,8 @@ QueryResult Executor::execDelete(const DeleteNode& n, Session& s) {
     for (const auto& [offset, row] : withOffsets) {
         auto m = rowToMap(def, row);
         if (n.where && !eval.evaluate(*n.where, m)) continue;
+        checkFKChildAbsent(tblMgr_, recMgr_, db, def, m);
+        idxMgr_.onDelete(db, n.table, m, offset);
         recMgr_.remove(db, n.table, offset);
         ++affected;
     }

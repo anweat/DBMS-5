@@ -18,6 +18,7 @@ static const std::unordered_map<std::string, TokenType> KEYWORDS = {
     // DML
     {"INSERT", TokenType::INSERT},   {"INTO", TokenType::INTO},
     {"VALUES", TokenType::VALUES},   {"SELECT", TokenType::SELECT},
+    {"DISTINCT", TokenType::DISTINCT},
     {"FROM", TokenType::FROM},       {"WHERE", TokenType::WHERE},
     {"UPDATE", TokenType::UPDATE},   {"SET", TokenType::SET},
     {"DELETE", TokenType::DELETE},

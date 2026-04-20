@@ -38,4 +38,5 @@ function(add_unit_test name file)
     add_test(NAME ${name} COMMAND ${name})
 endfunction()
 
-add_unit_test(test_lexer   tests/test_lexer.cpp)
+add_unit_test(test_lexer       tests/test_lexer.cpp)
+add_unit_test(test_integration tests/test_integration.cpp)

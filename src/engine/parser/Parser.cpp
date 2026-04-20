@@ -264,11 +264,19 @@ public:
     }
 
     std::shared_ptr<WhereExpr> parseComparison() {
-        // column_ref [table.]col
+        // column_ref [table.]col  OR  agg_func(col)  (used in HAVING)
         auto colExpr = std::make_shared<WhereExpr>();
         colExpr->kind = WhereExpr::Kind::COLUMN_REF;
         std::string first = parseIdent();
-        if (match(TokenType::DOT)) {
+        if (check(TokenType::LPAREN)) {
+            // Aggregate function call: MAX(salary) → stored as column "MAX(salary)"
+            advance(); // consume '('
+            std::string argCol;
+            if (check(TokenType::STAR)) { advance(); argCol = "*"; }
+            else                        { argCol = parseIdent(); }
+            expect(TokenType::RPAREN, "Expected ')' after aggregate argument");
+            colExpr->columnName = first + "(" + argCol + ")";
+        } else if (match(TokenType::DOT)) {
             colExpr->tableAlias = first;
             colExpr->columnName = parseIdent();
         } else {
@@ -739,6 +747,7 @@ public:
         expect(TokenType::SELECT, "");
         auto n = std::make_unique<SelectNode>();
         n->type = NodeType::SELECT;
+        n->distinct = match(TokenType::DISTINCT);
         n->columns = parseSelectColumns();
         expect(TokenType::FROM, "Expected FROM");
         auto [db, tbl] = parseTableRef();

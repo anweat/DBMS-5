@@ -30,7 +30,11 @@ public:
     void remove(const std::string& database, const std::string& table,
                 int64_t offset);
 
+    /** 返回最近一次 insert 的物理偏移 */
+    int64_t lastInsertOffset() const { return lastOffset_; }
+
 private:
     std::string   dataDir_;
     TableManager& tblMgr_;
+    int64_t       lastOffset_ = -1;
 };

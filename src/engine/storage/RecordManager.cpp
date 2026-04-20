@@ -145,6 +145,7 @@ int64_t RecordManager::insert(const std::string& database,
                           "Cannot open record file: " + path);
     int64_t pos = static_cast<int64_t>(fs::file_size(path));
     f.write(buf.data(), static_cast<std::streamsize>(recSz));
+    lastOffset_ = pos;
     return pos;
 }
 
