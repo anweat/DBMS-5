@@ -1,10 +1,10 @@
 #pragma once
 
 #include "../../types.h"
+#include "BTreeIndex.h"
 #include <string>
 #include <vector>
 #include <map>
-#include <unordered_map>
 
 class IndexManager {
 public:
@@ -39,8 +39,7 @@ private:
     struct IndexEntry {
         bool                     unique = false;
         std::vector<std::string> columns;
-        // keyStr -> list of file offsets
-        std::map<std::string, std::vector<int64_t>> data;
+        BTreeIndex               btree;   // B-tree backed index
     };
 
     // cache key: "db\tbl\tidxname"
@@ -59,7 +58,7 @@ private:
     // Load index from .tix file into cache
     void loadIndex(const std::string& db, const std::string& tbl,
                    const std::string& name);
-    // Save index from cache to .tix file
+    // Persist index from cache to .tix file
     void saveIndex(const std::string& db, const std::string& tbl,
                    const std::string& name);
     // Get or load index entry from cache

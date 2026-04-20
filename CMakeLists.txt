@@ -40,3 +40,4 @@ endfunction()
 
 add_unit_test(test_lexer       tests/test_lexer.cpp)
 add_unit_test(test_integration tests/test_integration.cpp)
+add_unit_test(test_security    tests/test_security.cpp)

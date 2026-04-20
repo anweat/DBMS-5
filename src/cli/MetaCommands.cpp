@@ -32,15 +32,17 @@ MetaResult MetaCommandHandler::handle(const std::string& input, CLISession& sess
     if (cmd == "help" || cmd == "h" || cmd == "?") {
         return {true,
             "Available commands:\n"
-            "  \\help         Show this help\n"
-            "  \\quit / \\q   Exit the DBMS\n"
-            "  \\status       Show session status\n"
-            "  \\clear        Clear screen\n"
-            "  \\history      Show command history\n"
-            "  \\use <db>     Switch database (alias for USE <db>)\n"
-            "  \\databases    List databases (alias for SHOW DATABASES)\n"
-            "  \\tables       List tables in current DB (alias for SHOW TABLES)\n"
-            "  source <file> Execute SQL file\n"
+            "  \\help              Show this help\n"
+            "  \\quit / \\q        Exit the DBMS\n"
+            "  \\status            Show session status\n"
+            "  \\clear             Clear screen\n"
+            "  \\history           Show command history\n"
+            "  \\use <db>          Switch database  (alias: USE <db>)\n"
+            "  \\desc <table>      Describe table   (alias: DESCRIBE <table>)\n"
+            "  \\databases         List databases   (alias: SHOW DATABASES)\n"
+            "  \\tables            List tables      (alias: SHOW TABLES)\n"
+            "  \\connect <u> <p>   Authenticate     (alias: CONNECT ... IDENTIFIED BY ...)\n"
+            "  source <file>      Execute SQL file\n"
         };
     }
 
@@ -50,11 +52,15 @@ MetaResult MetaCommandHandler::handle(const std::string& input, CLISession& sess
     }
 
     if (cmd == "status") {
-        std::string db = session.engineSession.currentDatabase;
-        std::string user = session.engineSession.user;
+        const auto& es = session.engineSession;
+        std::string db   = es.currentDatabase.empty() ? "(none)"      : es.currentDatabase;
+        std::string user = es.user.empty()             ? "(anonymous)" : es.user;
+        std::string tx   = es.transactionId.empty()    ? "none"        : "active (" + es.transactionId + ")";
         return {true,
-            "User   : " + (user.empty() ? "(anonymous)" : user) + "\n"
-            "Database: " + (db.empty()  ? "(none)"      : db)   + "\n"
+            "User       : " + user + "\n"
+            "Database   : " + db   + "\n"
+            "Transaction: " + tx   + "\n"
+            "Page size  : " + std::to_string(session.pageSize) + "\n"
         };
     }
 
@@ -75,11 +81,28 @@ MetaResult MetaCommandHandler::handle(const std::string& input, CLISession& sess
         return {true, out};
     }
 
-    if (cmd == "use" && !args.empty()) {
-        // 转换为 SQL：不直接处理，让引擎处理；但我们可以合成 SQL 返回 unhandled
-        // 实际上返回 handled=false 让调用方当 SQL 处理效果最好，
-        // 这里我们构造 USE sql 交给引擎
-        return {false, ""};  // fall-through to SQL engine with "USE <args>"
+    // \use <db>  →  forward as SQL: USE <db>
+    if (cmd == "use") {
+        if (args.empty())
+            return {true, Formatter::yellow("Usage: \\use <database>\n")};
+        return {false, "USE " + args};
+    }
+
+    // \desc <table>  →  forward as SQL: DESCRIBE <table>
+    if (cmd == "desc" || cmd == "describe") {
+        if (args.empty())
+            return {true, Formatter::yellow("Usage: \\desc <table>\n")};
+        return {false, "DESCRIBE " + args};
+    }
+
+    // \connect <user> <password>  →  CONNECT 'user' IDENTIFIED BY 'pass'
+    if (cmd == "connect") {
+        std::istringstream iss(args);
+        std::string user, pass;
+        iss >> user >> pass;
+        if (user.empty())
+            return {true, Formatter::yellow("Usage: \\connect <user> <password>\n")};
+        return {false, "CONNECT '" + user + "' IDENTIFIED BY '" + pass + "'"};
     }
 
     if (cmd == "databases") return {false, "SHOW DATABASES"};

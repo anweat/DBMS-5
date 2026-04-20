@@ -6,7 +6,7 @@
 
 namespace fs = std::filesystem;
 
-// FieldValue to index key string
+// FieldValue to index key string (same encoding as before, unchanged)
 static std::string fvToKey(const FieldValue& v) {
     if (std::holds_alternative<std::monostate>(v)) return "\x00NULL";
     if (std::holds_alternative<int64_t>(v))
@@ -62,38 +62,41 @@ std::vector<std::string> IndexManager::listIndexNames(const std::string& db,
     return names;
 }
 
+// ── File format (.tix) ───────────────────────────────────────────────────────
+// Line 1 : UNIQUE=0|1
+// Line 2 : COLUMNS=col1,col2,...
+// Line 3+: <key>\t<off1>,<off2>,...  (B-tree in-order dump)
+
 void IndexManager::loadIndex(const std::string& db, const std::string& tbl,
                                const std::string& name) {
-    std::string ck = cacheKey(db, tbl, name);
+    std::string ck   = cacheKey(db, tbl, name);
     std::string path = tixPath(db, tbl, name);
+
     IndexEntry entry;
     std::ifstream f(path);
-    if (!f) { cache_[ck] = entry; return; }
+    if (!f) { cache_[ck] = std::move(entry); return; }
 
     std::string line;
-    // Line 1: UNIQUE=0/1
     if (std::getline(f, line) && line.substr(0, 7) == "UNIQUE=")
         entry.unique = (line[7] == '1');
-    // Line 2: COLUMNS=col1,col2,...
     if (std::getline(f, line) && line.substr(0, 8) == "COLUMNS=") {
-        std::string colStr = line.substr(8);
-        std::stringstream ss(colStr);
+        std::stringstream ss(line.substr(8));
         std::string col;
         while (std::getline(ss, col, ','))
-            entry.columns.push_back(col);
+            if (!col.empty()) entry.columns.push_back(col);
     }
-    // Remaining lines: keyStr\toff1,off2,...
+
+    // Bulk-insert all key-offset pairs into the B-tree
     while (std::getline(f, line)) {
         auto tab = line.find('\t');
         if (tab == std::string::npos) continue;
-        std::string k = line.substr(0, tab);
+        std::string k      = line.substr(0, tab);
         std::string offStr = line.substr(tab + 1);
         std::stringstream ss(offStr);
         std::string tok;
-        while (std::getline(ss, tok, ',')) {
+        while (std::getline(ss, tok, ','))
             if (!tok.empty())
-                entry.data[k].push_back(std::stoll(tok));
-        }
+                entry.btree.insert(k, std::stoll(tok));
     }
     cache_[ck] = std::move(entry);
 }
@@ -113,14 +116,16 @@ void IndexManager::saveIndex(const std::string& db, const std::string& tbl,
         f << entry.columns[i];
     }
     f << "\n";
-    for (const auto& [k, offsets] : entry.data) {
+
+    // Dump B-tree in-order (ascending key)
+    entry.btree.inorder([&f](const std::string& k, const std::vector<int64_t>& offs) {
         f << k << "\t";
-        for (size_t i = 0; i < offsets.size(); ++i) {
+        for (size_t i = 0; i < offs.size(); ++i) {
             if (i > 0) f << ",";
-            f << offsets[i];
+            f << offs[i];
         }
         f << "\n";
-    }
+    });
 }
 
 IndexManager::IndexEntry* IndexManager::getEntry(const std::string& db,
@@ -163,11 +168,11 @@ void IndexManager::onInsert(const std::string& db, const std::string& tbl,
         auto* entry = getEntry(db, tbl, name);
         if (!entry) continue;
         std::string k = makeKeyStr(entry->columns, record);
-        if (entry->unique && !entry->data[k].empty()) {
+        if (entry->unique && !entry->btree.search(k).empty()) {
             throw DBException(ErrorCode::DUPLICATE_KEY,
                 "Duplicate index entry in unique index '" + name + "'");
         }
-        entry->data[k].push_back(offset);
+        entry->btree.insert(k, offset);
         saveIndex(db, tbl, name);
     }
 }
@@ -179,12 +184,7 @@ void IndexManager::onDelete(const std::string& db, const std::string& tbl,
         auto* entry = getEntry(db, tbl, name);
         if (!entry) continue;
         std::string k = makeKeyStr(entry->columns, record);
-        auto it = entry->data.find(k);
-        if (it != entry->data.end()) {
-            auto& offs = it->second;
-            offs.erase(std::remove(offs.begin(), offs.end(), offset), offs.end());
-            if (offs.empty()) entry->data.erase(it);
-        }
+        entry->btree.remove(k, offset);
         saveIndex(db, tbl, name);
     }
 }
@@ -199,17 +199,12 @@ void IndexManager::onUpdate(const std::string& db, const std::string& tbl,
         std::string oldK = makeKeyStr(entry->columns, oldRec);
         std::string newK = makeKeyStr(entry->columns, newRec);
         if (oldK == newK) continue;
-        auto it = entry->data.find(oldK);
-        if (it != entry->data.end()) {
-            auto& offs = it->second;
-            offs.erase(std::remove(offs.begin(), offs.end(), offset), offs.end());
-            if (offs.empty()) entry->data.erase(it);
-        }
-        if (entry->unique && !entry->data[newK].empty()) {
+        entry->btree.remove(oldK, offset);
+        if (entry->unique && !entry->btree.search(newK).empty()) {
             throw DBException(ErrorCode::DUPLICATE_KEY,
                 "Duplicate index entry in unique index '" + name + "'");
         }
-        entry->data[newK].push_back(offset);
+        entry->btree.insert(newK, offset);
         saveIndex(db, tbl, name);
     }
 }
@@ -220,10 +215,7 @@ std::vector<int64_t> IndexManager::lookup(const std::string& db, const std::stri
                                             const std::string& name, const FieldValue& key) {
     auto* entry = getEntry(db, tbl, name);
     if (!entry) return {};
-    std::string k = fvToKey(key);
-    auto it = entry->data.find(k);
-    if (it != entry->data.end()) return it->second;
-    return {};
+    return entry->btree.search(fvToKey(key));
 }
 
 std::vector<IndexDefinition> IndexManager::listIndexes(const std::string& db,
