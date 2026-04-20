@@ -972,6 +972,7 @@ QueryResult Executor::execSelect(const SelectNode &n, Session &s)
         if (n.groupBy.empty())
         {
             GroupKey emptyKey;
+            groupMap[emptyKey]; // ensure key exists even when filtered is empty
             for (const auto &m : filtered)
                 groupMap[emptyKey].push_back(&m);
             keyOrder.push_back(emptyKey);
