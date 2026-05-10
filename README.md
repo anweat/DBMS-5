@@ -9,7 +9,7 @@
 | 类别 | 功能 |
 |------|------|
 | **DDL** | `CREATE / DROP DATABASE`、`CREATE / DROP / ALTER TABLE`、`CREATE / DROP INDEX` |
-| **DML** | `INSERT`、`SELECT`（JOIN / WHERE / GROUP BY / ORDER BY / LIMIT / DISTINCT / 聚合）、`UPDATE`、`DELETE` |
+| **DML** | `INSERT`、`SELECT`（隐式内连接 / `INNER JOIN ... ON` / WHERE / GROUP BY / ORDER BY / LIMIT / DISTINCT / 聚合）、`UPDATE`、`DELETE` |
 | **约束** | `PRIMARY KEY`、`NOT NULL`、`UNIQUE`、`DEFAULT`、`AUTO_INCREMENT`、`FOREIGN KEY`（级联检查） |
 | **索引** | B 树索引（最小度 T=4，CLRS 实现）、唯一索引、多列复合索引 |
 | **事务** | `BEGIN / COMMIT / ROLLBACK`、内存 Undo Log 运行时回滚 |
@@ -26,10 +26,12 @@
 **Windows（MSYS2 UCRT64，推荐）**
 
 ```powershell
-$env:PATH = "C:\msys64\ucrt64\bin;" + $env:PATH
-cmake -B build -G "MinGW Makefiles" -DCMAKE_CXX_COMPILER="C:/msys64/ucrt64/bin/g++.exe"
-cmake --build build
+cmake --preset windows-msys2-ucrt64
+cmake --build --preset windows-msys2-ucrt64
+ctest --preset windows-msys2-ucrt64 --output-on-failure
 ```
+
+> Windows 下推荐使用 preset。它会通过 `tools/mingw-gpp-wrapper.cmd` 固定 MSYS2 UCRT64 的 PATH，并把 CMake/Ninja 传给 `g++` 的反斜杠路径转换为正斜杠路径，避免 `cc1plus.exe` 因找不到运行时 DLL 或路径格式异常而无诊断失败。若 MSYS2 安装在非默认位置，可设置 `DBMS_MINGW_GXX` 指向实际的 `g++.exe`。
 
 **Linux / macOS**
 
@@ -38,7 +40,7 @@ cmake -B build
 cmake --build build
 ```
 
-> 依赖：CMake ≥ 3.15，GCC ≥ 11（C++17）或 MSVC 2019+。
+> 依赖：CMake ≥ 3.25（使用 preset），GCC ≥ 11（C++17）或 MSVC 2019+。项目本身最低 CMake 版本仍为 3.15。
 
 ---
 
@@ -243,6 +245,12 @@ SELECT u.name, o.amount
   FROM users u, orders o
   WHERE u.id = o.user_id AND o.amount > 100;
 
+-- 显式 INNER JOIN
+SELECT u.name, o.amount
+  FROM users u INNER JOIN orders o ON u.id = o.user_id;
+
+-- 当前尚不支持 LEFT/RIGHT/FULL OUTER JOIN 或 IN (SELECT ...) 子查询
+
 -- 聚合函数：COUNT / SUM / AVG / MAX / MIN
 SELECT COUNT(*), AVG(age), MAX(score) FROM users;
 
@@ -291,25 +299,27 @@ DBMS-5/
 │   │   ├── Formatter.cpp/.h              # 结果表格 + 颜色格式化
 │   │   ├── MetaCommands.cpp/.h           # 元命令（\help、\quit、\status …）
 │   │   └── Session.h                     # CLISession（历史、页大小、引擎会话）
-│   └── engine/
-│       ├── DBEngine.cpp/.h               # 顶层引擎（解析 → 执行 → 返回结果）
-│       ├── lexer/
-│       │   └── Lexer.cpp/.h              # 词法分析器（Token 流）
-│       ├── parser/
-│       │   ├── Parser.cpp/.h             # 递归下降解析器
-│       │   └── AST.h                     # 抽象语法树节点定义
-│       ├── executor/
-│       │   ├── Executor.cpp/.h           # SQL 执行器（DDL/DML/TCL/DCL + 权限检查）
-│       │   └── ExprEvaluator.cpp/.h      # WHERE / HAVING 表达式求值
-│       └── storage/
-│           ├── DatabaseManager.cpp/.h    # 数据库（目录）管理
-│           ├── TableManager.cpp/.h       # 表定义（.tbl 文件）持久化
-│           ├── RecordManager.cpp/.h      # 行记录（堆文件 .dat）读写
-│           ├── IndexManager.cpp/.h       # 索引文件（.tix）管理
-│           ├── BTreeIndex.cpp/.h         # B 树索引（T=4，CLRS 第 18 章）
-│           ├── TransactionManager.cpp/.h # 内存 Undo Log（运行时回滚）
-│           ├── WalManager.cpp/.h         # WAL 日志写入与崩溃恢复
-│           └── UserManager.cpp/.h        # 用户/权限管理（.usr 文件）
+│   ├── engine/
+│   │   ├── DBEngine.cpp/.h               # 顶层引擎（解析 → 执行 → 返回结果）
+│   │   ├── lexer/
+│   │   │   └── Lexer.cpp/.h              # 词法分析器（Token 流）
+│   │   ├── parser/
+│   │   │   ├── Parser.cpp/.h             # 递归下降解析器
+│   │   │   └── AST.h                     # 抽象语法树节点定义
+│   │   ├── executor/
+│   │   │   ├── Executor.cpp/.h           # SQL 执行器（DDL/DML/TCL/DCL + 权限检查）
+│   │   │   └── ExprEvaluator.cpp/.h      # WHERE / HAVING 表达式求值
+│   │   └── storage/
+│   │       ├── DatabaseManager.cpp/.h    # 数据库（目录）管理
+│   │       ├── TableManager.cpp/.h       # 表定义（.tbl 文件）持久化
+│   │       ├── RecordManager.cpp/.h      # 行记录（堆文件 .dat）读写
+│   │       ├── IndexManager.cpp/.h       # 索引文件（.tix）管理
+│   │       ├── BTreeIndex.cpp/.h         # B 树索引（T=4，CLRS 第 18 章）
+│   │       ├── TransactionManager.cpp/.h # 内存 Undo Log（运行时回滚）
+│   │       ├── WalManager.cpp/.h         # WAL 日志写入与崩溃恢复
+│   │       └── UserManager.cpp/.h        # 用户/权限管理（.usr 文件）
+│   └── ui/
+│       └── README.md                     # Qt Widgets 简单前端规划与接入说明
 ├── tests/
 │   ├── test_lexer.cpp                    # 词法单元测试（63 项）
 │   ├── test_integration.cpp              # 集成测试（62 项）
@@ -317,8 +327,17 @@ DBMS-5/
 │   ├── test_comprehensive.cpp            # 综合行为测试（257 项）
 │   └── test_cli.cpp                      # CLI 输入行为测试（11 项）
 ├── data/                                 # 运行时数据目录（自动创建）
+├── docs/
+│   └── GitHub提交策略.md                 # 分支、commit、PR、合并规范
 └── CMakeLists.txt
 ```
+
+### 当前一周开发重点
+
+- **联表查询**：补齐逗号 `FROM` 隐式内连接、显式 `INNER JOIN ... ON`、表别名、限定字段名、字段歧义报错和集成测试。
+- **DBMS 基建扩展**：`IN (SELECT ...)`、外连接、存储过程和触发器列入后端后续规划，避免前端本周范围被挤占。
+- **Qt 前端**：使用简单 Qt Widgets UI，包含 SQL 输入、执行按钮、结果表格、错误提示，直接复用 `DBEngine::execute()` 和 `QueryResult`。
+- **协作方式**：所有成员从 `feature/*` 分支提交 PR 到 `develop`，通过构建、相关测试和至少 1 人 Review 后合并。
 
 ---
 

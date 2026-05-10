@@ -1,0 +1,11 @@
+# 默认所有改动由项目负责人兜底审查
+* @anweat
+
+# 核心模块建议按职责 Review；如 GitHub 用户名不同，在仓库设置后替换为组员账号
+/src/engine/parser/ @anweat
+/src/engine/executor/ @anweat
+/src/engine/storage/ @anweat
+/src/cli/ @anweat
+/src/ui/ @anweat
+/docs/ @anweat
+/*.md @anweat

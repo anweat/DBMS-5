@@ -502,15 +502,48 @@ namespace
                 throw DBException(ErrorCode::SQL_SYNTAX_ERROR,
                                   "Expected comparison operator near '" + cur().value + "'");
             }
-            auto litE = std::make_shared<WhereExpr>();
-            litE->kind = WhereExpr::Kind::LITERAL;
-            litE->value = parseLiteral();
+
+            // 右侧可以是字面量或列引用
+            std::shared_ptr<WhereExpr> rightExpr = std::make_shared<WhereExpr>();
+
+            // 尝试解析列引用（table.column 或 column）
+            if (isIdentOrKw())
+            {
+                std::string rightFirst = parseIdent();
+                if (match(TokenType::DOT))
+                {
+                    // table.column
+                    rightExpr->kind = WhereExpr::Kind::COLUMN_REF;
+                    rightExpr->tableAlias = rightFirst;
+                    rightExpr->columnName = parseIdent();
+                }
+                else if (check(TokenType::COMMA) || check(TokenType::AND) ||
+                         check(TokenType::OR) || check(TokenType::RPAREN) || atEnd())
+                {
+                    // 简单列引用（后面没有其他字面量内容）
+                    rightExpr->kind = WhereExpr::Kind::COLUMN_REF;
+                    rightExpr->columnName = rightFirst;
+                }
+                else
+                {
+                    // 回退并解析为字面量
+                    --pos; // 回退一个token
+                    rightExpr->kind = WhereExpr::Kind::LITERAL;
+                    rightExpr->value = parseLiteral();
+                }
+            }
+            else
+            {
+                // 字面量
+                rightExpr->kind = WhereExpr::Kind::LITERAL;
+                rightExpr->value = parseLiteral();
+            }
 
             auto e = std::make_shared<WhereExpr>();
             e->kind = WhereExpr::Kind::COMPARISON;
             e->op = op;
             e->left = colExpr;
-            e->right = litE;
+            e->right = rightExpr;
             return e;
         }
 
@@ -561,13 +594,22 @@ namespace
                 if (tryAgg(AggFunc::AVG, TokenType::AVG))
                     continue;
 
-                // [table.]column [AS alias]
+                // [table.]column [AS alias] or table.*
                 sc.kind = SelectColumn::Kind::COLUMN_REF;
                 std::string first = parseIdent();
                 if (match(TokenType::DOT))
                 {
-                    sc.tableAlias = first;
-                    sc.columnName = parseIdent();
+                    // Could be table.column or table.*
+                    if (match(TokenType::STAR))
+                    {
+                        sc.kind = SelectColumn::Kind::QUALIFIED_WILDCARD;
+                        sc.tableAlias = first;
+                    }
+                    else
+                    {
+                        sc.tableAlias = first;
+                        sc.columnName = parseIdent();
+                    }
                 }
                 else
                 {
@@ -956,11 +998,170 @@ namespace
             n->distinct = match(TokenType::DISTINCT);
             n->columns = parseSelectColumns();
             expect(TokenType::FROM, "Expected FROM");
+
+            // 解析第一个表
+            TableRef firstTable;
             auto [db, tbl] = parseTableRef();
-            n->database = db;
-            n->table = tbl;
+            firstTable.database = db;
+            firstTable.table = tbl;
+
+            // 可选别名（AS alias 或直接 alias）
             if (match(TokenType::AS))
-                n->tableAlias = parseIdent();
+                firstTable.alias = parseIdent();
+            else if (isIdentOrKw() &&
+                     cur().type != TokenType::WHERE &&
+                     cur().type != TokenType::GROUP &&
+                     cur().type != TokenType::ORDER &&
+                     cur().type != TokenType::LIMIT &&
+                     cur().type != TokenType::OFFSET &&
+                     cur().type != TokenType::HAVING &&
+                     cur().type != TokenType::COMMA &&
+                     cur().type != TokenType::SEMICOLON &&
+                     cur().type != TokenType::JOIN &&
+                     cur().type != TokenType::INNER &&
+                     cur().type != TokenType::LEFT &&
+                     cur().type != TokenType::RIGHT &&
+                     cur().type != TokenType::CROSS &&
+                     !atEnd())
+            {
+                // 无 AS 的别名（如：FROM users u）
+                firstTable.alias = parseIdent();
+            }
+
+            n->fromTables.push_back(firstTable);
+
+            // 解析后续表：可以是 COMMA 分隔（隐式 join）或显式 JOIN
+            while (true)
+            {
+                TableRef nextTable;
+
+                // COMMA 分隔的隐式 join
+                if (match(TokenType::COMMA))
+                {
+                    auto [db2, tbl2] = parseTableRef();
+                    nextTable.database = db2;
+                    nextTable.table = tbl2;
+                    nextTable.joinType = JoinType::NONE;
+
+                    // 可选别名
+                    if (match(TokenType::AS))
+                        nextTable.alias = parseIdent();
+                    else if (isIdentOrKw() &&
+                             cur().type != TokenType::WHERE &&
+                             cur().type != TokenType::GROUP &&
+                             cur().type != TokenType::ORDER &&
+                             cur().type != TokenType::LIMIT &&
+                             cur().type != TokenType::OFFSET &&
+                             cur().type != TokenType::HAVING &&
+                             cur().type != TokenType::COMMA &&
+                             cur().type != TokenType::SEMICOLON &&
+                             cur().type != TokenType::JOIN &&
+                             cur().type != TokenType::INNER &&
+                             cur().type != TokenType::LEFT &&
+                             cur().type != TokenType::RIGHT &&
+                             cur().type != TokenType::CROSS &&
+                             !atEnd())
+                    {
+                        nextTable.alias = parseIdent();
+                    }
+
+                    n->fromTables.push_back(nextTable);
+                    continue;
+                }
+
+                // 显式 JOIN 语法
+                JoinType jt = JoinType::NONE;
+                if (match(TokenType::CROSS))
+                {
+                    expect(TokenType::JOIN, "Expected JOIN after CROSS");
+                    jt = JoinType::CROSS;
+                }
+                else if (match(TokenType::INNER))
+                {
+                    expect(TokenType::JOIN, "Expected JOIN after INNER");
+                    jt = JoinType::INNER;
+                }
+                else if (match(TokenType::LEFT))
+                {
+                    match(TokenType::OUTER); // LEFT [OUTER] JOIN
+                    expect(TokenType::JOIN, "Expected JOIN after LEFT");
+                    jt = JoinType::LEFT;
+                }
+                else if (match(TokenType::RIGHT))
+                {
+                    match(TokenType::OUTER); // RIGHT [OUTER] JOIN
+                    expect(TokenType::JOIN, "Expected JOIN after RIGHT");
+                    jt = JoinType::RIGHT;
+                }
+                else if (match(TokenType::JOIN))
+                {
+                    // 默认 INNER JOIN
+                    jt = JoinType::INNER;
+                }
+                else
+                {
+                    // 没有更多表
+                    break;
+                }
+
+                // 不支持 LEFT/RIGHT OUTER JOIN
+                if (jt == JoinType::LEFT || jt == JoinType::RIGHT)
+                {
+                    throw DBException(ErrorCode::SQL_SYNTAX_ERROR,
+                                      "LEFT/RIGHT OUTER JOIN is not supported. Use INNER JOIN or implicit join (FROM a, b WHERE ...).");
+                }
+
+                // 解析 JOIN 的表
+                auto [dbJoin, tblJoin] = parseTableRef();
+                nextTable.database = dbJoin;
+                nextTable.table = tblJoin;
+                nextTable.joinType = jt;
+
+                // 可选别名
+                if (match(TokenType::AS))
+                    nextTable.alias = parseIdent();
+                else if (isIdentOrKw() &&
+                         cur().type != TokenType::ON &&
+                         cur().type != TokenType::WHERE &&
+                         cur().type != TokenType::GROUP &&
+                         cur().type != TokenType::ORDER &&
+                         cur().type != TokenType::LIMIT &&
+                         cur().type != TokenType::OFFSET &&
+                         cur().type != TokenType::HAVING &&
+                         cur().type != TokenType::JOIN &&
+                         cur().type != TokenType::INNER &&
+                         cur().type != TokenType::LEFT &&
+                         cur().type != TokenType::RIGHT &&
+                         cur().type != TokenType::CROSS &&
+                         !atEnd())
+                {
+                    nextTable.alias = parseIdent();
+                }
+
+                // INNER JOIN 和 CROSS JOIN 需要 ON 条件（CROSS JOIN 可选）
+                if (jt == JoinType::INNER)
+                {
+                    expect(TokenType::ON, "Expected ON after INNER JOIN");
+                    nextTable.onCondition = parseWhereExpr();
+                }
+                else if (jt == JoinType::CROSS)
+                {
+                    // CROSS JOIN 不需要 ON 条件
+                    if (match(TokenType::ON))
+                        nextTable.onCondition = parseWhereExpr();
+                }
+
+                n->fromTables.push_back(nextTable);
+            }
+
+            // 向后兼容：填充单表字段
+            if (!n->fromTables.empty())
+            {
+                n->database = n->fromTables[0].database;
+                n->table = n->fromTables[0].table;
+                n->tableAlias = n->fromTables[0].alias;
+            }
+
             if (match(TokenType::WHERE))
                 n->where = parseWhereExpr();
             if (check(TokenType::GROUP))
@@ -978,7 +1179,17 @@ namespace
                 do
                 {
                     OrderByExpr ob;
-                    ob.columnName = parseIdent();
+                    // 支持 table.column 或 column
+                    std::string first = parseIdent();
+                    if (match(TokenType::DOT))
+                    {
+                        ob.tableAlias = first;
+                        ob.columnName = parseIdent();
+                    }
+                    else
+                    {
+                        ob.columnName = first;
+                    }
                     if (match(TokenType::DESC))
                         ob.ascending = false;
                     else

@@ -10,6 +10,8 @@
 #include <filesystem>
 #include <cassert>
 #include <stdexcept>
+#include <cmath>
+#include <chrono>
 
 namespace fs = std::filesystem;
 
@@ -292,6 +294,314 @@ static void test_alter() {
     ASSERT_EQ(r.rows.size(), (size_t)5);  // 原4列 + bonus
 }
 
+// ── 14. 多表 JOIN 查询 ────────────────────────────────────────────────────────
+static void test_multi_table_join() {
+    std::cout << "[test_multi_table_join]\n";
+
+    // 创建两个表
+    exec("CREATE TABLE users ("
+         "  uid INT PRIMARY KEY AUTO_INCREMENT,"
+         "  uname VARCHAR(30) NOT NULL"
+         ")");
+    exec("CREATE TABLE orders ("
+         "  oid INT PRIMARY KEY AUTO_INCREMENT,"
+         "  user_id INT,"
+         "  amount DOUBLE"
+         ")");
+
+    exec("INSERT INTO users (uname) VALUES ('Alice')");
+    exec("INSERT INTO users (uname) VALUES ('Bob')");
+    exec("INSERT INTO users (uname) VALUES ('Carol')");
+
+    exec("INSERT INTO orders (user_id, amount) VALUES (1, 100.5)");
+    exec("INSERT INTO orders (user_id, amount) VALUES (1, 200.0)");
+    exec("INSERT INTO orders (user_id, amount) VALUES (2, 150.0)");
+
+    // 多表查询：用户和订单
+    auto r = exec("SELECT u.uname, o.amount FROM users u, orders o WHERE u.uid = o.user_id");
+    ASSERT_EQ(r.type, QueryResult::Type::SELECT);
+    ASSERT_EQ(r.rows.size(), (size_t)3);  // Alice:100.5, Alice:200, Bob:150
+
+    // 验证结果
+    ASSERT_TRUE(std::get<std::string>(r.rows[0][0]) == "Alice");
+    ASSERT_TRUE(std::abs(std::get<double>(r.rows[0][1]) - 100.5) < 0.01);
+
+    // 测试表别名和 qualified 列名
+    r = exec("SELECT users.uname, orders.amount FROM users, orders WHERE users.uid = orders.user_id");
+    ASSERT_EQ(r.rows.size(), (size_t)3);
+
+    // 空结果：不匹配的 WHERE
+    r = exec("SELECT u.uname, o.amount FROM users u, orders o WHERE u.uid = 999");
+    ASSERT_EQ(r.rows.size(), (size_t)0);
+
+    // 清理
+    exec("DROP TABLE orders");
+    exec("DROP TABLE users");
+}
+
+// ── 15. 列别名和 qualified 投影 ──────────────────────────────────────────────
+static void test_qualified_projection() {
+    std::cout << "[test_qualified_projection]\n";
+
+    exec("CREATE TABLE t1 (id INT, val VARCHAR(10))");
+    exec("CREATE TABLE t2 (id INT, val VARCHAR(10))");
+
+    exec("INSERT INTO t1 (id, val) VALUES (1, 'A')");
+    exec("INSERT INTO t2 (id, val) VALUES (1, 'B')");
+
+    // Qualified projection
+    auto r = exec("SELECT t1.id, t1.val, t2.val FROM t1, t2");
+    ASSERT_EQ(r.type, QueryResult::Type::SELECT);
+    ASSERT_EQ(r.columns.size(), (size_t)3);
+    ASSERT_EQ(r.rows.size(), (size_t)1);
+
+    // 列别名
+    r = exec("SELECT t1.id AS tid, t1.val AS v1, t2.val AS v2 FROM t1, t2");
+    ASSERT_EQ(r.columns[0].name, "tid");
+    ASSERT_EQ(r.columns[1].name, "v1");
+    ASSERT_EQ(r.columns[2].name, "v2");
+
+    // 未限定重复列名应明确报错，避免前端展示错误数据
+    r = execExpectError("SELECT id FROM t1, t2");
+    ASSERT_TRUE(r.message.find("Ambiguous") != std::string::npos);
+
+    exec("DROP TABLE t1");
+    exec("DROP TABLE t2");
+}
+
+// ── 16. ORDER BY with qualified names ─────────────────────────────────────────
+static void test_order_by_qualified() {
+    std::cout << "[test_order_by_qualified]\n";
+
+    exec("CREATE TABLE items (id INT, name VARCHAR(20))");
+    exec("INSERT INTO items (id, name) VALUES (3, 'Zebra')");
+    exec("INSERT INTO items (id, name) VALUES (1, 'Apple')");
+    exec("INSERT INTO items (id, name) VALUES (2, 'Banana')");
+
+    auto r = exec("SELECT items.name FROM items ORDER BY items.id ASC");
+    ASSERT_EQ(r.rows.size(), (size_t)3);
+    ASSERT_EQ(std::get<std::string>(r.rows[0][0]), "Apple");
+    ASSERT_EQ(std::get<std::string>(r.rows[1][0]), "Banana");
+    ASSERT_EQ(std::get<std::string>(r.rows[2][0]), "Zebra");
+
+    exec("DROP TABLE items");
+}
+
+// ── 17. CREATE INDEX backfill test ────────────────────────────────────────────
+static void test_index_backfill() {
+    std::cout << "[test_index_backfill]\n";
+
+    exec("CREATE TABLE inventory (item VARCHAR(20), qty INT)");
+    exec("INSERT INTO inventory (item, qty) VALUES ('Widget', 10)");
+    exec("INSERT INTO inventory (item, qty) VALUES ('Gadget', 20)");
+
+    // 创建索引应该回填现有记录
+    auto r = exec("CREATE INDEX idx_item ON inventory (item)");
+    ASSERT_TRUE(r.type != QueryResult::Type::ERROR);
+    ASSERT_TRUE(r.message.find("backfilled") != std::string::npos);
+
+    // 插入新记录后索引应该更新
+    exec("INSERT INTO inventory (item, qty) VALUES ('Doodad', 30)");
+
+    exec("DROP TABLE inventory");
+}
+
+// ── 17. Explicit INNER JOIN syntax ────────────────────────────────────────────
+static void test_explicit_inner_join() {
+    std::cout << "[test_explicit_inner_join]\n";
+
+    exec("CREATE TABLE authors (aid INT PRIMARY KEY, aname VARCHAR(30))");
+    exec("CREATE TABLE books (bid INT PRIMARY KEY, title VARCHAR(50), author_id INT)");
+
+    exec("INSERT INTO authors (aid, aname) VALUES (1, 'Tolkien')");
+    exec("INSERT INTO authors (aid, aname) VALUES (2, 'Rowling')");
+    exec("INSERT INTO books (bid, title, author_id) VALUES (1, 'The Hobbit', 1)");
+    exec("INSERT INTO books (bid, title, author_id) VALUES (2, 'LOTR', 1)");
+    exec("INSERT INTO books (bid, title, author_id) VALUES (3, 'HP1', 2)");
+
+    // Test INNER JOIN with ON
+    auto r = exec("SELECT a.aname, b.title FROM authors a INNER JOIN books b ON a.aid = b.author_id");
+    ASSERT_EQ(r.type, QueryResult::Type::SELECT);
+    ASSERT_EQ(r.rows.size(), (size_t)3);
+
+    // Test JOIN (implicit INNER) with ON
+    r = exec("SELECT a.aname, b.title FROM authors a JOIN books b ON a.aid = b.author_id");
+    ASSERT_EQ(r.rows.size(), (size_t)3);
+
+    // Test ORDER BY with JOIN
+    r = exec("SELECT a.aname, b.title FROM authors a JOIN books b ON a.aid = b.author_id ORDER BY b.title");
+    ASSERT_EQ(r.rows.size(), (size_t)3);
+    ASSERT_TRUE(std::get<std::string>(r.rows[0][1]) == "HP1");
+
+    exec("DROP TABLE books");
+    exec("DROP TABLE authors");
+}
+
+// ── 18. Chained INNER JOIN ────────────────────────────────────────────────────
+static void test_chained_join() {
+    std::cout << "[test_chained_join]\n";
+
+    exec("CREATE TABLE customers (cid INT PRIMARY KEY, cname VARCHAR(30))");
+    exec("CREATE TABLE orders2 (oid INT PRIMARY KEY, customer_id INT, total DOUBLE)");
+    exec("CREATE TABLE items2 (iid INT PRIMARY KEY, order_id INT, iname VARCHAR(30))");
+
+    exec("INSERT INTO customers (cid, cname) VALUES (1, 'Alice')");
+    exec("INSERT INTO orders2 (oid, customer_id, total) VALUES (1, 1, 100.0)");
+    exec("INSERT INTO items2 (iid, order_id, iname) VALUES (1, 1, 'Widget')");
+
+    // Three-way JOIN
+    auto r = exec("SELECT c.cname, o.total, i.iname FROM customers c "
+                  "JOIN orders2 o ON c.cid = o.customer_id "
+                  "JOIN items2 i ON o.oid = i.order_id");
+    ASSERT_EQ(r.type, QueryResult::Type::SELECT);
+    ASSERT_EQ(r.rows.size(), (size_t)1);
+    ASSERT_TRUE(std::get<std::string>(r.rows[0][0]) == "Alice");
+    ASSERT_TRUE(std::get<std::string>(r.rows[0][2]) == "Widget");
+
+    exec("DROP TABLE items2");
+    exec("DROP TABLE orders2");
+    exec("DROP TABLE customers");
+}
+
+// ── 19. Qualified wildcard (alias.*) ──────────────────────────────────────────
+static void test_qualified_wildcard() {
+    std::cout << "[test_qualified_wildcard]\n";
+
+    exec("CREATE TABLE products2 (pid INT, pname VARCHAR(20))");
+    exec("CREATE TABLE stock (sid INT, product_id INT, qty INT)");
+
+    exec("INSERT INTO products2 (pid, pname) VALUES (1, 'Laptop')");
+    exec("INSERT INTO products2 (pid, pname) VALUES (2, 'Mouse')");
+    exec("INSERT INTO stock (sid, product_id, qty) VALUES (1, 1, 10)");
+
+    // Test p.* (qualified wildcard)
+    auto r = exec("SELECT p.*, s.qty FROM products2 p, stock s WHERE p.pid = s.product_id");
+    ASSERT_EQ(r.type, QueryResult::Type::SELECT);
+    ASSERT_EQ(r.columns.size(), (size_t)3); // p.pid, p.pname, s.qty
+    ASSERT_EQ(r.rows.size(), (size_t)1);
+    ASSERT_TRUE(r.columns[0].name.find(".pid") != std::string::npos);
+    ASSERT_TRUE(r.columns[1].name.find(".pname") != std::string::npos);
+
+    // Test mixed wildcard and columns
+    r = exec("SELECT s.*, p.pname FROM stock s, products2 p WHERE s.product_id = p.pid");
+    ASSERT_EQ(r.columns.size(), (size_t)4); // s.sid, s.product_id, s.qty, p.pname
+    ASSERT_EQ(r.rows.size(), (size_t)1);
+
+    exec("DROP TABLE stock");
+    exec("DROP TABLE products2");
+}
+
+// ── 20. Error: LEFT JOIN not supported ────────────────────────────────────────
+static void test_left_join_unsupported() {
+    std::cout << "[test_left_join_unsupported]\n";
+
+    exec("CREATE TABLE ta (id INT)");
+    exec("CREATE TABLE tb (id INT)");
+
+    // LEFT JOIN should throw error
+    auto r = execExpectError("SELECT * FROM ta LEFT JOIN tb ON ta.id = tb.id");
+    ASSERT_TRUE(r.message.find("not supported") != std::string::npos);
+
+    exec("DROP TABLE tb");
+    exec("DROP TABLE ta");
+}
+
+// ── 21. JOIN boundary errors ─────────────────────────────────────────────────
+static void test_join_boundary_errors() {
+    std::cout << "[test_join_boundary_errors]\n";
+
+    exec("CREATE TABLE ja (id INT, code INT, label VARCHAR(20))");
+    exec("CREATE TABLE jb (id INT, a_code INT, label VARCHAR(20))");
+    exec("INSERT INTO ja (id, code, label) VALUES (1, 10, 'A')");
+    exec("INSERT INTO jb (id, a_code, label) VALUES (1, 10, 'B')");
+
+    auto r = execExpectError("SELECT ja.id FROM ja, jb WHERE id = 1");
+    ASSERT_TRUE(r.message.find("Ambiguous") != std::string::npos);
+
+    r = execExpectError("SELECT missing.id FROM ja, jb WHERE ja.code = jb.a_code");
+    ASSERT_TRUE(r.message.find("Unknown table or alias") != std::string::npos);
+
+    r = execExpectError("SELECT ja.id FROM ja JOIN jb ON ja.missing = jb.a_code");
+    ASSERT_TRUE(r.message.find("Unknown column") != std::string::npos);
+
+    r = execExpectError("SELECT a.id FROM ja a JOIN jb a ON a.code = a.a_code");
+    ASSERT_TRUE(r.message.find("Duplicate table alias") != std::string::npos);
+
+    r = exec("SELECT ja.id, jb.label FROM ja JOIN jb ON ja.code = jb.a_code");
+    ASSERT_EQ(r.rows.size(), (size_t)1);
+
+    exec("DROP TABLE jb");
+    exec("DROP TABLE ja");
+}
+
+// ── 22. JOIN benchmark baseline ──────────────────────────────────────────────
+static void test_join_benchmark_baseline() {
+    std::cout << "[test_join_benchmark_baseline]\n";
+
+    exec("CREATE TABLE bench_users (uid INT PRIMARY KEY, name VARCHAR(20))");
+    exec("CREATE TABLE bench_orders (oid INT PRIMARY KEY, user_id INT, amount INT)");
+
+    int oid = 1;
+    for (int user = 1; user <= 40; ++user) {
+        exec("INSERT INTO bench_users (uid, name) VALUES (" + std::to_string(user) + ", 'U" + std::to_string(user) + "')");
+        for (int order = 1; order <= 10; ++order) {
+            exec("INSERT INTO bench_orders (oid, user_id, amount) VALUES ("
+                 + std::to_string(oid++) + ", "
+                 + std::to_string(user) + ", "
+                 + std::to_string(order * 10) + ")");
+        }
+    }
+
+    auto start = std::chrono::steady_clock::now();
+    auto r = exec("SELECT u.uid, o.oid, o.amount FROM bench_users u "
+                  "JOIN bench_orders o ON u.uid = o.user_id "
+                  "WHERE o.amount >= 50 ORDER BY o.oid ASC");
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start).count();
+
+    ASSERT_EQ(r.type, QueryResult::Type::SELECT);
+    ASSERT_EQ(r.rows.size(), (size_t)240);
+    ASSERT_TRUE(elapsed < 5000);
+
+    exec("DROP TABLE bench_orders");
+    exec("DROP TABLE bench_users");
+}
+
+// ── 23. RESTORE DATABASE test ─────────────────────────────────────────────────
+static void test_restore() {
+    std::cout << "[test_restore]\n";
+
+    // 创建测试数据库和表
+    exec("CREATE DATABASE testdb2");
+    exec("USE testdb2");
+    exec("CREATE TABLE sample (id INT, txt VARCHAR(20))");
+    exec("INSERT INTO sample (id, txt) VALUES (1, 'Hello')");
+    exec("INSERT INTO sample (id, txt) VALUES (2, 'World')");
+
+    // 备份到文件
+    std::string backupFile = DATA_DIR + "/backup_test.sql";
+    exec("BACKUP DATABASE testdb2 TO '" + backupFile + "'");
+    ASSERT_TRUE(fs::exists(backupFile));
+
+    // 删除表和数据库
+    exec("DROP TABLE sample");
+    exec("DROP DATABASE testdb2");
+
+    // 从备份恢复
+    auto r = exec("RESTORE DATABASE testdb2 FROM '" + backupFile + "'");
+    ASSERT_TRUE(r.type != QueryResult::Type::ERROR);
+
+    // 验证数据已恢复
+    exec("USE testdb2");
+    r = exec("SELECT * FROM sample");
+    ASSERT_EQ(r.rows.size(), (size_t)2);
+
+    // 清理
+    exec("DROP TABLE sample");
+    exec("DROP DATABASE testdb2");
+    fs::remove(backupFile);
+}
+
 // ── 清理 ──────────────────────────────────────────────────────────────────────
 static void cleanup() {
     exec("DROP TABLE staff");
@@ -323,6 +633,17 @@ int main() {
         test_index();
         test_foreign_key();
         test_alter();
+        test_multi_table_join();
+        test_qualified_projection();
+        test_order_by_qualified();
+        test_index_backfill();
+        test_explicit_inner_join();
+        test_chained_join();
+        test_qualified_wildcard();
+        test_left_join_unsupported();
+        test_join_boundary_errors();
+        test_join_benchmark_baseline();
+        test_restore();
         cleanup();
     } catch (const std::exception& e) {
         std::cerr << "UNCAUGHT EXCEPTION: " << e.what() << "\n";

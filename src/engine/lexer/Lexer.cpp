@@ -74,6 +74,13 @@ static const std::unordered_map<std::string, TokenType> KEYWORDS = {
     {"AVG", TokenType::AVG},
     {"IF", TokenType::IF},
     {"EXISTS", TokenType::EXISTS},
+    // JOIN keywords
+    {"JOIN", TokenType::JOIN},
+    {"INNER", TokenType::INNER},
+    {"LEFT", TokenType::LEFT},
+    {"RIGHT", TokenType::RIGHT},
+    {"OUTER", TokenType::OUTER},
+    {"CROSS", TokenType::CROSS},
     // 布尔字面量（特殊处理）
     {"TRUE", TokenType::BOOL_LITERAL},
     {"FALSE", TokenType::BOOL_LITERAL},

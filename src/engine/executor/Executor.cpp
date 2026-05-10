@@ -1,6 +1,9 @@
 #include "Executor.h"
 #include "ExprEvaluator.h"
+#include "../lexer/Lexer.h"
+#include "../parser/Parser.h"
 #include <algorithm>
+#include <functional>
 #include <sstream>
 #include <fstream>
 #include <set>
@@ -341,6 +344,8 @@ QueryResult Executor::execute(const ASTNode &ast, Session &session)
         return execConnect(static_cast<const ConnectNode &>(ast), session);
     case NodeType::BACKUP_DATABASE:
         return execBackupDatabase(static_cast<const BackupDatabaseNode &>(ast), session);
+    case NodeType::RESTORE_DATABASE:
+        return execRestoreDatabase(static_cast<const RestoreDatabaseNode &>(ast), session);
     default:
         throw DBException(ErrorCode::UNKNOWN_ERROR,
                           "Unsupported statement type");
@@ -522,8 +527,28 @@ QueryResult Executor::execCreateIndex(const CreateIndexNode &n, Session &s)
 {
     std::string db = resolveDb(n.database, s);
     checkPermission(s, db, "*", Privilege::ALL);
+
+    // 创建索引
     idxMgr_.createIndex(db, n.table, n.indexName, n.columns, n.unique);
-    return QueryResult::ok("Index '" + n.indexName + "' created (schema only).");
+
+    // 回填现有记录。索引值必须保存 RecordManager 的物理 offset，不能使用行号。
+    auto defOpt = tblMgr_.describeTable(db, n.table);
+    size_t backfilled = 0;
+    if (defOpt)
+    {
+        const auto& def = *defOpt;
+        auto rows = recMgr_.scanWithOffsets(db, n.table);
+        for (const auto& [offset, row] : rows)
+        {
+            auto rowMap = rowToMap(def, row);
+            idxMgr_.onInsert(db, n.table, rowMap, offset);
+            ++backfilled;
+        }
+    }
+
+    return QueryResult::ok("Index '" + n.indexName + "' created and backfilled with "
+                          + std::to_string(backfilled)
+                          + " record(s).");
 }
 
 QueryResult Executor::execDropIndex(const DropIndexNode &n, Session &s)
@@ -795,25 +820,206 @@ QueryResult Executor::execInsert(const InsertNode &n, Session &s)
 
 QueryResult Executor::execSelect(const SelectNode &n, Session &s)
 {
-    std::string db = resolveDb(n.database, s);
-    checkPermission(s, db, n.table, Privilege::SELECT);
-    auto defOpt = tblMgr_.describeTable(db, n.table);
-    if (!defOpt)
-        throw DBException(ErrorCode::TABLE_NOT_FOUND,
-                          "Unknown table '" + n.table + "'");
-    const auto &def = *defOpt;
     ExprEvaluator eval;
 
-    // ── 1. 全表扫描 + WHERE 过滤 ──────────────────────────────────────
-    auto rawRows = recMgr_.scan(db, n.table);
-    std::vector<std::map<std::string, FieldValue>> filtered;
-    filtered.reserve(rawRows.size());
-    for (const auto &row : rawRows)
+    // ── 0. 多表处理：收集所有表、检查权限、扫描数据 ────────────────────────
+    struct TableInfo {
+        std::string db;
+        std::string name;
+        std::string alias;  // 用户指定别名，或表名本身
+        TableDefinition def;
+        std::vector<Row> rawRows;
+        JoinType joinType = JoinType::NONE;
+        std::shared_ptr<WhereExpr> onCondition;
+    };
+    std::vector<TableInfo> tables;
+
+    if (!n.fromTables.empty())
     {
-        auto m = rowToMap(def, row);
-        if (!n.where || eval.evaluate(*n.where, m))
-            filtered.push_back(std::move(m));
+        // 多表查询
+        for (const auto& tref : n.fromTables)
+        {
+            TableInfo ti;
+            ti.db = tref.database.empty() ? resolveDb("", s) : tref.database;
+            ti.name = tref.table;
+            ti.alias = tref.alias.empty() ? tref.table : tref.alias;
+            ti.joinType = tref.joinType;
+            ti.onCondition = tref.onCondition;
+
+            checkPermission(s, ti.db, ti.name, Privilege::SELECT);
+            auto defOpt = tblMgr_.describeTable(ti.db, ti.name);
+            if (!defOpt)
+                throw DBException(ErrorCode::TABLE_NOT_FOUND,
+                                  "Unknown table '" + ti.name + "'");
+            ti.def = *defOpt;
+            ti.rawRows = recMgr_.scan(ti.db, ti.name);
+            tables.push_back(std::move(ti));
+        }
     }
+    else
+    {
+        // 单表查询（兼容旧代码）
+        std::string db = resolveDb(n.database, s);
+        checkPermission(s, db, n.table, Privilege::SELECT);
+        auto defOpt = tblMgr_.describeTable(db, n.table);
+        if (!defOpt)
+            throw DBException(ErrorCode::TABLE_NOT_FOUND,
+                              "Unknown table '" + n.table + "'");
+
+        TableInfo ti;
+        ti.db = db;
+        ti.name = n.table;
+        ti.alias = n.tableAlias.empty() ? n.table : n.tableAlias;
+        ti.def = *defOpt;
+        ti.rawRows = recMgr_.scan(db, n.table);
+        tables.push_back(std::move(ti));
+    }
+
+    const TableDefinition &primaryDef = tables.front().def;
+
+    std::map<std::string, int> tableNameCounts;
+    std::set<std::string> qualifiers;
+    for (const auto &ti : tables)
+    {
+        tableNameCounts[ti.name]++;
+        if (!qualifiers.insert(ti.alias).second)
+            throw DBException(ErrorCode::COLUMN_INVALID,
+                              "Duplicate table alias '" + ti.alias + "'");
+    }
+
+    auto qualifierMatches = [&](const TableInfo &ti, const std::string &qualifier) -> bool
+    {
+        if (qualifier.empty())
+            return true;
+        if (ti.alias == qualifier)
+            return true;
+        auto it = tableNameCounts.find(ti.name);
+        return it != tableNameCounts.end() && it->second == 1 && ti.name == qualifier;
+    };
+
+    auto countMatchingColumns = [&](const std::string& tableAlias,
+                                    const std::string& columnName) -> int {
+        int matches = 0;
+        for (const auto& ti : tables)
+        {
+            if (!qualifierMatches(ti, tableAlias))
+                continue;
+            for (const auto& col : ti.def.columns)
+            {
+                if (col.name == columnName)
+                    ++matches;
+            }
+        }
+        return matches;
+    };
+
+    auto qualifierExists = [&](const std::string &tableAlias) -> bool
+    {
+        if (tableAlias.empty())
+            return true;
+        for (const auto &ti : tables)
+            if (qualifierMatches(ti, tableAlias))
+                return true;
+        return false;
+    };
+
+    auto validateColumnRef = [&](const std::string &tableAlias,
+                                 const std::string &columnName,
+                                 const std::string &context)
+    {
+        if (!tableAlias.empty() && !qualifierExists(tableAlias))
+            throw DBException(ErrorCode::TABLE_NOT_FOUND,
+                              "Unknown table or alias '" + tableAlias + "' in " + context);
+        int matchCount = countMatchingColumns(tableAlias, columnName);
+        std::string display = tableAlias.empty() ? columnName : tableAlias + "." + columnName;
+        if (matchCount == 0)
+            throw DBException(ErrorCode::COLUMN_NOT_FOUND,
+                              "Unknown column '" + display + "' in " + context);
+        if (matchCount > 1)
+            throw DBException(ErrorCode::COLUMN_INVALID,
+                              "Ambiguous column '" + display + "' in " + context + ". Use table.column or alias.column.");
+    };
+
+    auto lookupKeyFor = [&](const std::string &tableAlias,
+                            const std::string &columnName) -> std::string
+    {
+        if (tableAlias.empty())
+            return columnName;
+        for (const auto &ti : tables)
+            if (qualifierMatches(ti, tableAlias))
+                return ti.alias + "." + columnName;
+        return tableAlias + "." + columnName;
+    };
+
+    std::function<void(const WhereExpr *, const std::string &)> validateExpr;
+    validateExpr = [&](const WhereExpr *expr, const std::string &context)
+    {
+        if (!expr)
+            return;
+        if (expr->kind == WhereExpr::Kind::COLUMN_REF)
+        {
+            validateColumnRef(expr->tableAlias, expr->columnName, context);
+            return;
+        }
+        validateExpr(expr->left.get(), context);
+        validateExpr(expr->right.get(), context);
+    };
+
+    for (const auto &ti : tables)
+        validateExpr(ti.onCondition.get(), "JOIN ON");
+    validateExpr(n.where.get(), "WHERE");
+    for (const auto &gc : n.groupBy)
+        validateColumnRef("", gc, "GROUP BY");
+
+    // ── 1. 构建笛卡尔积（递归）+ 应用 JOIN ON 条件 + WHERE 过滤 ────────────────
+    std::vector<std::map<std::string, FieldValue>> filtered;
+
+    // 递归函数：构建多表笛卡尔积，应用 JOIN ON 条件
+    std::function<void(size_t, std::map<std::string, FieldValue>)> buildProduct;
+    buildProduct = [&](size_t tableIdx, std::map<std::string, FieldValue> cur) {
+        if (tableIdx >= tables.size())
+        {
+            // 所有表都选好了，应用 WHERE 过滤
+            if (!n.where || eval.evaluate(*n.where, cur))
+                filtered.push_back(std::move(cur));
+            return;
+        }
+
+        const auto& ti = tables[tableIdx];
+
+        // 对于第一个表，不需要检查 ON 条件
+        // 对于后续表，如果有 ON 条件，需要在添加行之前检查
+        for (const auto& row : ti.rawRows)
+        {
+            auto rowMap = rowToMap(ti.def, row);
+            std::map<std::string, FieldValue> next = cur;
+
+            // 添加 qualified keys (alias.column) 和 unqualified keys (column)
+            // 只有在不冲突时才添加 unqualified
+            for (const auto& [colName, val] : rowMap)
+            {
+                std::string qualKey = ti.alias + "." + colName;
+                next[qualKey] = val;
+
+                // 检查 unqualified 是否已存在（来自其他表）
+                if (next.count(colName) == 0)
+                    next[colName] = val;
+                else
+                {
+                    // 标记为歧义：用特殊前缀表示冲突
+                    next[colName] = std::monostate{}; // 清除以防止使用
+                }
+            }
+
+            // 如果当前表有 ON 条件，检查是否满足
+            if (ti.onCondition && !eval.evaluate(*ti.onCondition, next))
+                continue; // 不满足 ON 条件，跳过这一行
+
+            buildProduct(tableIdx + 1, std::move(next));
+        }
+    };
+
+    buildProduct(0, {});
 
     // ── 2. 确定是否需要聚合/分组 ──────────────────────────────────────
     bool hasAgg = false;
@@ -945,17 +1151,102 @@ QueryResult Executor::execSelect(const SelectNode &n, Session &s)
     // ── 3. 确定输出列 ─────────────────────────────────────────────────
     std::vector<ColumnMeta> outCols;
     bool hasWildcard = false;
+    bool hasQualifiedWildcard = false;
     for (const auto &sc : n.columns)
+    {
         if (sc.kind == SelectColumn::Kind::WILDCARD)
         {
             hasWildcard = true;
             break;
         }
+        if (sc.kind == SelectColumn::Kind::QUALIFIED_WILDCARD)
+        {
+            hasQualifiedWildcard = true;
+        }
+    }
 
     if (hasWildcard)
     {
-        for (const auto &col : def.columns)
-            outCols.push_back({col.name, col.type});
+        // 输出所有表的所有列
+        for (const auto& ti : tables)
+            for (const auto &col : ti.def.columns)
+                outCols.push_back({ti.alias + "." + col.name, col.type});
+    }
+    else if (hasQualifiedWildcard)
+    {
+        // 混合：处理 alias.* 和普通列
+        for (const auto &sc : n.columns)
+        {
+            if (sc.kind == SelectColumn::Kind::QUALIFIED_WILDCARD)
+            {
+                // 查找表
+                bool found = false;
+                for (const auto& ti : tables)
+                {
+                    if (ti.alias == sc.tableAlias || ti.name == sc.tableAlias)
+                    {
+                        found = true;
+                        for (const auto &col : ti.def.columns)
+                            outCols.push_back({ti.alias + "." + col.name, col.type});
+                        break;
+                    }
+                }
+                if (!found)
+                    throw DBException(ErrorCode::TABLE_NOT_FOUND,
+                                      "Unknown table '" + sc.tableAlias + "' in qualified wildcard");
+            }
+            else if (sc.kind == SelectColumn::Kind::COLUMN_REF)
+            {
+                std::string nm = sc.alias.empty() ? sc.columnName : sc.alias;
+                FieldType ft = FieldType::VARCHAR;
+
+                // 查找列类型（优先使用 qualified，否则搜索所有表）
+                bool found = false;
+                if (!sc.tableAlias.empty())
+                {
+                    // 查找指定表
+                    for (const auto& ti : tables)
+                    {
+                        if (qualifierMatches(ti, sc.tableAlias))
+                        {
+                            for (const auto &col : ti.def.columns)
+                                if (col.name == sc.columnName)
+                                {
+                                    ft = col.type;
+                                    found = true;
+                                    break;
+                                }
+                            break;
+                        }
+                    }
+                }
+                else
+                {
+                    // 搜索所有表
+                    int matchCount = countMatchingColumns("", sc.columnName);
+                    if (matchCount > 1)
+                        throw DBException(ErrorCode::COLUMN_INVALID,
+                                          "Ambiguous column '" + sc.columnName + "'. Use table.column or alias.column.");
+                    for (const auto& ti : tables)
+                    {
+                        for (const auto &col : ti.def.columns)
+                            if (col.name == sc.columnName)
+                            {
+                                ft = col.type;
+                                found = true;
+                                break;
+                            }
+                        if (found) break;
+                    }
+                }
+                validateColumnRef(sc.tableAlias, sc.columnName, "SELECT");
+                outCols.push_back({nm, ft});
+            }
+            else if (sc.kind == SelectColumn::Kind::AGGREGATE)
+            {
+                outCols.push_back({aggName(sc.aggregate), aggType(sc.aggregate)});
+            }
+        }
     }
     else
     {
@@ -965,12 +1256,47 @@ QueryResult Executor::execSelect(const SelectNode &n, Session &s)
             {
                 std::string nm = sc.alias.empty() ? sc.columnName : sc.alias;
                 FieldType ft = FieldType::VARCHAR;
-                for (const auto &col : def.columns)
-                    if (col.name == sc.columnName)
+
+                // 查找列类型（优先使用 qualified，否则搜索所有表）
+                bool found = false;
+                if (!sc.tableAlias.empty())
+                {
+                    // 查找指定表
+                    for (const auto& ti : tables)
                     {
-                        ft = col.type;
-                        break;
+                        if (qualifierMatches(ti, sc.tableAlias))
+                        {
+                            for (const auto &col : ti.def.columns)
+                                if (col.name == sc.columnName)
+                                {
+                                    ft = col.type;
+                                    found = true;
+                                    break;
+                                }
+                            break;
+                        }
                     }
+                }
+                else
+                {
+                    // 搜索所有表
+                    int matchCount = countMatchingColumns("", sc.columnName);
+                    if (matchCount > 1)
+                        throw DBException(ErrorCode::COLUMN_INVALID,
+                                          "Ambiguous column '" + sc.columnName + "'. Use table.column or alias.column.");
+                    for (const auto& ti : tables)
+                    {
+                        for (const auto &col : ti.def.columns)
+                            if (col.name == sc.columnName)
+                            {
+                                ft = col.type;
+                                found = true;
+                                break;
+                            }
+                        if (found) break;
+                    }
+                }
+                validateColumnRef(sc.tableAlias, sc.columnName, "SELECT");
                 outCols.push_back({nm, ft});
             }
             else if (sc.kind == SelectColumn::Kind::AGGREGATE)
@@ -1039,7 +1365,7 @@ QueryResult Executor::execSelect(const SelectNode &n, Session &s)
 
             if (!rows.empty())
             {
-                for (const auto &col : def.columns)
+                for (const auto &col : primaryDef.columns)
                 {
                     if (!repr.count(col.name))
                     {
@@ -1057,14 +1383,27 @@ QueryResult Executor::execSelect(const SelectNode &n, Session &s)
     // ── 5. ORDER BY ───────────────────────────────────────────────────
     if (!n.orderBy.empty())
     {
+        for (const auto& ob : n.orderBy)
+        {
+            validateColumnRef(ob.tableAlias, ob.columnName, "ORDER BY");
+        }
         std::stable_sort(filtered.begin(), filtered.end(),
                          [&](const std::map<std::string, FieldValue> &a,
                              const std::map<std::string, FieldValue> &b)
                          {
                              for (const auto &ob : n.orderBy)
                              {
-                                 auto ia = a.find(ob.columnName);
-                                 auto ib = b.find(ob.columnName);
+                                 // 尝试 qualified 和 unqualified 查找
+                                 std::string lookupKey = lookupKeyFor(ob.tableAlias, ob.columnName);
+
+                                 auto ia = a.find(lookupKey);
+                                 if (ia == a.end() && ob.tableAlias.empty())
+                                     ia = a.find(ob.columnName);
+
+                                 auto ib = b.find(lookupKey);
+                                 if (ib == b.end() && ob.tableAlias.empty())
+                                     ib = b.find(ob.columnName);
+
                                  FieldValue va = (ia != a.end()) ? ia->second : std::monostate{};
                                  FieldValue vb = (ib != b.end()) ? ib->second : std::monostate{};
                                  bool aNul = std::holds_alternative<std::monostate>(va);
@@ -1122,10 +1461,61 @@ QueryResult Executor::execSelect(const SelectNode &n, Session &s)
         Row outRow;
         if (hasWildcard)
         {
-            for (const auto &col : def.columns)
+            // 输出所有表的所有列
+            for (const auto& ti : tables)
+                for (const auto &col : ti.def.columns)
+                {
+                    std::string qualKey = ti.alias + "." + col.name;
+                    auto it = m.find(qualKey);
+                    outRow.push_back(it != m.end() ? it->second : std::monostate{});
+                }
+        }
+        else if (hasQualifiedWildcard)
+        {
+            // 处理混合情况：qualified wildcard + 普通列
+            for (const auto &sc : n.columns)
             {
-                auto it = m.find(col.name);
-                outRow.push_back(it != m.end() ? it->second : std::monostate{});
+                if (sc.kind == SelectColumn::Kind::QUALIFIED_WILDCARD)
+                {
+                    // 输出指定表的所有列
+                    for (const auto& ti : tables)
+                    {
+                        if (ti.alias == sc.tableAlias || ti.name == sc.tableAlias)
+                        {
+                            for (const auto &col : ti.def.columns)
+                            {
+                                std::string qualKey = ti.alias + "." + col.name;
+                                auto it = m.find(qualKey);
+                                outRow.push_back(it != m.end() ? it->second : std::monostate{});
+                            }
+                            break;
+                        }
+                    }
+                }
+                else if (sc.kind == SelectColumn::Kind::COLUMN_REF)
+                {
+                    // 查找：优先 qualified，否则 unqualified
+                    FieldValue val = std::monostate{};
+                    if (!sc.tableAlias.empty())
+                    {
+                        std::string qualKey = lookupKeyFor(sc.tableAlias, sc.columnName);
+                        auto it = m.find(qualKey);
+                        if (it != m.end())
+                            val = it->second;
+                    }
+                    else
+                    {
+                        auto it = m.find(sc.columnName);
+                        if (it != m.end())
+                            val = it->second;
+                    }
+                    outRow.push_back(val);
+                }
+                else if (sc.kind == SelectColumn::Kind::AGGREGATE)
+                {
+                    auto it = m.find(aggName(sc.aggregate));
+                    outRow.push_back(it != m.end() ? it->second : std::monostate{});
+                }
             }
         }
         else
@@ -1134,8 +1524,22 @@ QueryResult Executor::execSelect(const SelectNode &n, Session &s)
             {
                 if (sc.kind == SelectColumn::Kind::COLUMN_REF)
                 {
-                    auto it = m.find(sc.columnName);
-                    outRow.push_back(it != m.end() ? it->second : std::monostate{});
+                    // 查找：优先 qualified，否则 unqualified
+                    FieldValue val = std::monostate{};
+                    if (!sc.tableAlias.empty())
+                    {
+                        std::string qualKey = lookupKeyFor(sc.tableAlias, sc.columnName);
+                        auto it = m.find(qualKey);
+                        if (it != m.end())
+                            val = it->second;
+                    }
+                    else
+                    {
+                        auto it = m.find(sc.columnName);
+                        if (it != m.end())
+                            val = it->second;
+                    }
+                    outRow.push_back(val);
                 }
                 else if (sc.kind == SelectColumn::Kind::AGGREGATE)
                 {
@@ -1547,4 +1951,99 @@ QueryResult Executor::execBackupDatabase(const BackupDatabaseNode& n, Session& s
     return QueryResult::ok(
         "Backup of '" + db + "' written to '" + n.filepath + "' ("
         + std::to_string(stmtCount) + " statement(s)).");
+}
+
+// ============================================================
+// 恢复数据库（从 SQL 文件）
+// ============================================================
+
+QueryResult Executor::execRestoreDatabase(const RestoreDatabaseNode& n, Session& s)
+{
+    checkPermission(s, "*", "*", Privilege::ALL);  // 仅 root 或全局 ALL 权限
+
+    if (n.filepath.empty())
+        throw DBException(ErrorCode::FILE_IO_ERROR, "No source file specified for RESTORE");
+
+    std::ifstream in(n.filepath);
+    if (!in)
+        throw DBException(ErrorCode::FILE_IO_ERROR,
+                          "Cannot open restore file: " + n.filepath);
+
+    // 读取文件并逐行解析 SQL 语句
+    std::string line;
+    std::string stmt;
+    int executed = 0;
+    int errors = 0;
+    std::string lastError;
+
+    while (std::getline(in, line))
+    {
+        // 去掉注释
+        auto commentPos = line.find("--");
+        if (commentPos != std::string::npos)
+            line = line.substr(0, commentPos);
+
+        // 去掉首尾空白
+        size_t start = line.find_first_not_of(" \t\r\n");
+        size_t end = line.find_last_not_of(" \t\r\n");
+        if (start == std::string::npos)
+            continue;
+        line = line.substr(start, end - start + 1);
+
+        if (line.empty())
+            continue;
+
+        stmt += line + " ";
+
+        // 检查是否以分号结尾
+        if (line.back() == ';')
+        {
+            // 去掉末尾分号
+            stmt = stmt.substr(0, stmt.size() - 2);
+
+            // 去掉首尾空白
+            size_t stmtStart = stmt.find_first_not_of(" \t\r\n");
+            if (stmtStart != std::string::npos)
+            {
+                stmt = stmt.substr(stmtStart);
+                size_t stmtEnd = stmt.find_last_not_of(" \t\r\n");
+                if (stmtEnd != std::string::npos)
+                    stmt = stmt.substr(0, stmtEnd + 1);
+
+                if (!stmt.empty())
+                {
+                    // 执行语句（通过递归调用 execute）
+                    try
+                    {
+                        // 需要通过 DBEngine 执行（但我们在 Executor 内部）
+                        // 使用 Parser + Executor 路径
+                        Lexer lexer;
+                        Parser parser;
+                        auto ast = parser.parse(lexer.tokenize(stmt));
+                        execute(*ast, s);
+                        ++executed;
+                    }
+                    catch (const DBException& e)
+                    {
+                        ++errors;
+                        lastError = e.what();
+                        // 继续执行其他语句（best-effort）
+                    }
+                    catch (...)
+                    {
+                        ++errors;
+                        lastError = "Unknown error executing: " + stmt;
+                    }
+                }
+            }
+            stmt.clear();
+        }
+    }
+
+    std::string msg = "Restore from '" + n.filepath + "' completed: "
+                    + std::to_string(executed) + " statement(s) executed";
+    if (errors > 0)
+        msg += ", " + std::to_string(errors) + " error(s) (last: " + lastError + ")";
+
+    return QueryResult::ok(msg);
 }

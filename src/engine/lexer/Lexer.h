@@ -75,6 +75,13 @@ enum class TokenType
     AVG,
     IF,
     EXISTS,
+    // JOIN keywords
+    JOIN,
+    INNER,
+    LEFT,
+    RIGHT,
+    OUTER,
+    CROSS,
     // 事务
     BEGIN,
     COMMIT,

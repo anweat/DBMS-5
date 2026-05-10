@@ -70,6 +70,51 @@ static bool likeMatch(const std::string& text, const std::string& pattern) {
 }
 
 // ============================================================
+// ExprEvaluator::lookupColumn
+// ============================================================
+
+FieldValue ExprEvaluator::lookupColumn(const std::string& tableAlias,
+                                        const std::string& columnName,
+                                        const std::map<std::string, FieldValue>& row) const {
+    // 1. 如果有 table/alias 前缀，优先查找 "alias.column"
+    if (!tableAlias.empty()) {
+        std::string qualKey = tableAlias + "." + columnName;
+        auto it = row.find(qualKey);
+        if (it != row.end())
+            return it->second;
+    }
+
+    // 2. 查找无前缀的 "column"（单表或唯一列）
+    auto it = row.find(columnName);
+    if (it != row.end())
+        return it->second;
+
+    // 3. 如果未找到，尝试在所有 qualified keys 中查找匹配的列名
+    //    如果找到多个，说明有歧义，返回 NULL
+    //    如果找到一个，使用它
+    const FieldValue* found = nullptr;
+    int count = 0;
+    for (const auto& [key, val] : row) {
+        auto dotPos = key.find('.');
+        if (dotPos != std::string::npos) {
+            std::string colPart = key.substr(dotPos + 1);
+            if (colPart == columnName) {
+                found = &val;
+                ++count;
+                if (count > 1)
+                    break; // 歧义，停止查找
+            }
+        }
+    }
+
+    if (count == 1 && found)
+        return *found;
+
+    // 未找到或歧义 → 返回 NULL
+    return std::monostate{};
+}
+
+// ============================================================
 // ExprEvaluator::evaluate
 // ============================================================
 
@@ -97,12 +142,10 @@ bool ExprEvaluator::evaluate(const WhereExpr& expr,
             }
 
         case WhereExpr::Kind::COMPARISON: {
-            // 取左侧列值
+            // 取左侧列值（使用 qualified lookup）
             FieldValue lval = std::monostate{};
             if (expr.left && expr.left->kind == WhereExpr::Kind::COLUMN_REF) {
-                const auto& col = expr.left->columnName;
-                auto it = row.find(col);
-                if (it != row.end()) lval = it->second;
+                lval = lookupColumn(expr.left->tableAlias, expr.left->columnName, row);
             }
 
             // IS NULL / IS NOT NULL
@@ -123,15 +166,26 @@ bool ExprEvaluator::evaluate(const WhereExpr& expr,
             // LIKE
             if (expr.op == ExprOp::LIKE) {
                 if (!expr.right) return false;
-                FieldValue rval = expr.right->value;
+                FieldValue rval;
+                if (expr.right->kind == WhereExpr::Kind::LITERAL) {
+                    rval = expr.right->value;
+                } else if (expr.right->kind == WhereExpr::Kind::COLUMN_REF) {
+                    rval = lookupColumn(expr.right->tableAlias, expr.right->columnName, row);
+                }
                 std::string text    = toString(lval);
                 std::string pattern = toString(rval);
                 return likeMatch(text, pattern);
             }
 
-            // 普通比较
+            // 普通比较（支持 column-to-column）
             if (!expr.right) return false;
-            FieldValue rval = expr.right->value;
+            FieldValue rval;
+            if (expr.right->kind == WhereExpr::Kind::LITERAL) {
+                rval = expr.right->value;
+            } else if (expr.right->kind == WhereExpr::Kind::COLUMN_REF) {
+                rval = lookupColumn(expr.right->tableAlias, expr.right->columnName, row);
+            }
+
             int cmp = compareValues(lval, rval);
             if (cmp == -2) return false; // NULL 参与比较 → false
             switch (expr.op) {

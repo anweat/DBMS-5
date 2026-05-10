@@ -84,12 +84,13 @@ struct SelectColumn
 {
     enum class Kind
     {
-        WILDCARD,
+        WILDCARD,      // *
+        QUALIFIED_WILDCARD, // alias.*
         COLUMN_REF,
         AGGREGATE
     } kind = Kind::COLUMN_REF;
 
-    std::string tableAlias;
+    std::string tableAlias;  // For QUALIFIED_WILDCARD and COLUMN_REF
     std::string columnName;
     AggregateExpr aggregate;
     std::string alias; // AS 别名
@@ -97,8 +98,33 @@ struct SelectColumn
 
 struct OrderByExpr
 {
+    std::string tableAlias; // 可选前缀：t.col 中的 t
     std::string columnName;
     bool ascending = true;
+};
+
+// ============================================================
+// 表引用（用于 SELECT FROM 多表）
+// ============================================================
+
+enum class JoinType
+{
+    NONE,        // 单表或逗号分隔的多表（隐式 CROSS JOIN）
+    INNER,
+    LEFT,
+    RIGHT,
+    CROSS
+};
+
+struct TableRef
+{
+    std::string database; // 可选显式指定库名
+    std::string table;
+    std::string alias; // AS 别名或无 AS 的别名
+
+    // 显式 JOIN 信息
+    JoinType joinType = JoinType::NONE;
+    std::shared_ptr<WhereExpr> onCondition; // JOIN ... ON condition
 };
 
 // ============================================================
@@ -253,9 +279,16 @@ struct InsertNode : ASTNode
 struct SelectNode : ASTNode
 {
     std::vector<SelectColumn> columns;
+
+    // 多表支持：fromTables[0] 是主表
+    // 单表查询时仍可用 table/database/tableAlias（兼容）
+    std::vector<TableRef> fromTables;
+
+    // 保留单表字段用于向后兼容和简单查询
     std::string table;
     std::string database;
     std::string tableAlias;
+
     std::shared_ptr<WhereExpr> where; // nullptr 表示无 WHERE
     std::vector<std::string> groupBy;
     std::shared_ptr<WhereExpr> having;

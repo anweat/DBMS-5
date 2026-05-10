@@ -72,4 +72,5 @@ private:
 
     // 备份
     QueryResult execBackupDatabase(const BackupDatabaseNode &n, Session &s);
+    QueryResult execRestoreDatabase(const RestoreDatabaseNode &n, Session &s);
 };

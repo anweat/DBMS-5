@@ -1,0 +1,39 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 25,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "windows-msys2-ucrt64",
+      "displayName": "Windows MSYS2 UCRT64 Ninja",
+      "description": "Use a small wrapper so MSYS2 g++ receives forward-slash paths from CMake/Ninja.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-windows",
+      "environment": {
+        "PATH": "C:\\msys64\\ucrt64\\bin;$penv{PATH}"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_COMPILER": "${sourceDir}/tools/mingw-gpp-wrapper.cmd"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "windows-msys2-ucrt64",
+      "configurePreset": "windows-msys2-ucrt64"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "windows-msys2-ucrt64",
+      "configurePreset": "windows-msys2-ucrt64",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}
