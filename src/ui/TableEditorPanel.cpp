@@ -16,6 +16,7 @@ TableEditorPanel::TableEditorPanel(QWidget *parent)
       titleLabel_(new QLabel(tr("No table loaded"), this)),
       table_(new QTableWidget(this))
 {
+    table_->setObjectName(QStringLiteral("tableEditorTable"));
     table_->setSelectionBehavior(QAbstractItemView::SelectRows);
     table_->horizontalHeader()->setStretchLastSection(true);
     table_->verticalHeader()->setVisible(false);
@@ -27,6 +28,9 @@ TableEditorPanel::TableEditorPanel(QWidget *parent)
     auto *addButton = new QPushButton(tr("Add Row"), this);
     auto *deleteButton = new QPushButton(tr("Delete Row"), this);
     auto *saveButton = new QPushButton(tr("Save Edits"), this);
+    addButton->setObjectName(QStringLiteral("tableAddRowButton"));
+    deleteButton->setObjectName(QStringLiteral("tableDeleteRowButton"));
+    saveButton->setObjectName(QStringLiteral("tableSaveEditsButton"));
     connect(addButton, &QPushButton::clicked, this, &TableEditorPanel::addRow);
     connect(deleteButton, &QPushButton::clicked, this, &TableEditorPanel::deleteSelectedRows);
     connect(saveButton, &QPushButton::clicked, this, &TableEditorPanel::saveChanges);
@@ -62,7 +66,7 @@ void TableEditorPanel::loadTable(const QString &database, const QString &table, 
     QStringList headers;
     for (const auto &column : result.columns)
     {
-        QString name = QString::fromStdString(column.name);
+        QString name = normalizeColumnName(QString::fromStdString(column.name));
         columnNames_ << name;
         headers << name;
     }
@@ -118,7 +122,7 @@ void TableEditorPanel::deleteSelectedRows()
     for (int row : rows)
     {
         if (row < originalRowCount_)
-            emit sqlRequested(QStringLiteral("DELETE FROM %1 WHERE %2").arg(tableName_, keyWhereClause(row)));
+            emit sqlRequested(QStringLiteral("DELETE FROM %1 WHERE %2").arg(qualifiedTableName(), keyWhereClause(row)));
         table_->removeRow(row);
     }
 }
@@ -142,7 +146,7 @@ void TableEditorPanel::saveChanges()
         }
         if (!cols.isEmpty())
             emit sqlRequested(QStringLiteral("INSERT INTO %1 (%2) VALUES (%3)")
-                                  .arg(tableName_, cols.join(QStringLiteral(", ")), values.join(QStringLiteral(", "))));
+                                  .arg(qualifiedTableName(), cols.join(QStringLiteral(", ")), values.join(QStringLiteral(", "))));
     }
 
     for (const QString &cell : changedCells_)
@@ -155,7 +159,7 @@ void TableEditorPanel::saveChanges()
         if (row >= originalRowCount_ || col >= columnNames_.size())
             continue;
         emit sqlRequested(QStringLiteral("UPDATE %1 SET %2 = %3 WHERE %4")
-                              .arg(tableName_, columnNames_[col], literal(itemText(row, col)), keyWhereClause(row)));
+                              .arg(qualifiedTableName(), columnNames_[col], literal(itemText(row, col)), keyWhereClause(row)));
     }
 }
 
@@ -163,6 +167,12 @@ QString TableEditorPanel::itemText(int row, int column) const
 {
     auto *item = table_->item(row, column);
     return item ? item->text() : QString();
+}
+
+QString TableEditorPanel::normalizeColumnName(const QString &name) const
+{
+    const int dot = name.lastIndexOf('.');
+    return dot >= 0 ? name.mid(dot + 1) : name;
 }
 
 QString TableEditorPanel::literal(const QString &value) const
@@ -181,4 +191,9 @@ QString TableEditorPanel::literal(const QString &value) const
 QString TableEditorPanel::keyWhereClause(int row) const
 {
     return columnNames_.first() + QStringLiteral(" = ") + literal(itemText(row, 0));
+}
+
+QString TableEditorPanel::qualifiedTableName() const
+{
+    return database_.isEmpty() ? tableName_ : database_ + QStringLiteral(".") + tableName_;
 }

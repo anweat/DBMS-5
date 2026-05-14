@@ -24,9 +24,11 @@ private:
     void addRow();
     void deleteSelectedRows();
     void saveChanges();
+    QString normalizeColumnName(const QString &name) const;
     QString itemText(int row, int column) const;
     QString literal(const QString &value) const;
     QString keyWhereClause(int row) const;
+    QString qualifiedTableName() const;
 
     QLabel *titleLabel_;
     QTableWidget *table_;

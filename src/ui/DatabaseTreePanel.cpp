@@ -17,8 +17,10 @@ DatabaseTreePanel::DatabaseTreePanel(QWidget *parent)
     : QWidget(parent),
       tree_(new QTreeWidget(this))
 {
+    tree_->setObjectName(QStringLiteral("databaseTree"));
     tree_->setHeaderLabel(tr("Objects"));
     auto *refreshButton = new QPushButton(tr("Refresh"), this);
+    refreshButton->setObjectName(QStringLiteral("catalogRefreshButton"));
 
     connect(refreshButton, &QPushButton::clicked, this, &DatabaseTreePanel::refreshRequested);
     connect(tree_, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem *item, int) {

@@ -282,6 +282,27 @@ static FieldValue validateField(const FieldValue &v, const ColumnDefinition &col
     return v;
 }
 
+static std::vector<std::map<std::string, FieldValue>> rowsToRecords(
+    const TableDefinition &def,
+    const std::vector<Row> &rows)
+{
+    std::vector<std::map<std::string, FieldValue>> records;
+    records.reserve(rows.size());
+    for (const Row &row : rows)
+        records.push_back(rowToMap(def, row));
+    return records;
+}
+
+static FieldValue valueForNewColumn(const ColumnDefinition &col, bool tableHasRows)
+{
+    if (!col.defaultValue.empty())
+        return validateField(parseDefault(col), col);
+    if (col.nullable || !tableHasRows)
+        return std::monostate{};
+    throw DBException(ErrorCode::CONSTRAINT_VIOLATION,
+                      "Cannot add NOT NULL column '" + col.name + "' without DEFAULT to a non-empty table");
+}
+
 // ============================================================
 // execute 入口：按 AST 类型分发
 // ============================================================
@@ -556,17 +577,61 @@ QueryResult Executor::execAlterTable(const AlterTableNode &n, Session &s)
 {
     std::string db = resolveDb(n.database, s);
     checkPermission(s, db, "*", Privilege::ALL);
+    auto oldDefOpt = tblMgr_.describeTable(db, n.table);
+    if (!oldDefOpt)
+        throw DBException(ErrorCode::TABLE_NOT_FOUND,
+                          "Unknown table '" + n.table + "'");
+
+    const TableDefinition oldDef = *oldDefOpt;
+    auto records = rowsToRecords(oldDef, recMgr_.scan(db, n.table));
+
     switch (n.action)
     {
     case AlterAction::ADD_COLUMN:
+    {
+        FieldValue fillValue = valueForNewColumn(n.column, !records.empty());
+        for (auto &record : records)
+            record[n.column.name] = fillValue;
         tblMgr_.addColumn(db, n.table, n.column);
+        recMgr_.replaceAll(db, n.table, records);
         return QueryResult::ok("Column '" + n.column.name + "' added.");
+    }
     case AlterAction::MODIFY_COLUMN:
+    {
+        bool found = false;
+        for (auto &record : records)
+        {
+            auto it = record.find(n.column.name);
+            if (it != record.end())
+            {
+                found = true;
+                it->second = validateField(coerce(it->second, n.column), n.column);
+                if (!n.column.nullable && std::holds_alternative<std::monostate>(it->second))
+                    throw DBException(ErrorCode::CONSTRAINT_VIOLATION,
+                                      "Column '" + n.column.name + "' cannot be NULL");
+            }
+        }
+        if (!found)
+        {
+            for (const auto &col : oldDef.columns)
+                if (col.name == n.column.name)
+                    found = true;
+        }
+        if (!found)
+            throw DBException(ErrorCode::COLUMN_NOT_FOUND,
+                              "Unknown column '" + n.column.name + "'");
         tblMgr_.modifyColumn(db, n.table, n.column.name, n.column);
+        recMgr_.replaceAll(db, n.table, records);
         return QueryResult::ok("Column '" + n.column.name + "' modified.");
+    }
     case AlterAction::DROP_COLUMN:
+    {
+        for (auto &record : records)
+            record.erase(n.dropColName);
         tblMgr_.dropColumn(db, n.table, n.dropColName);
+        recMgr_.replaceAll(db, n.table, records);
         return QueryResult::ok("Column '" + n.dropColName + "' dropped.");
+    }
     }
     return QueryResult::ok();
 }

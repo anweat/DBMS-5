@@ -10,6 +10,7 @@ StatusMetaPanel::StatusMetaPanel(QWidget *parent)
       summaryLabel_(new QLabel(this)),
       logView_(new QTextEdit(this))
 {
+    logView_->setObjectName(QStringLiteral("statusLogView"));
     logView_->setReadOnly(true);
     logView_->setMinimumWidth(220);
     summaryLabel_->setWordWrap(true);

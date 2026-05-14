@@ -30,6 +30,10 @@ public:
     void remove(const std::string& database, const std::string& table,
                 int64_t offset);
 
+    /** 用当前表结构完整重写记录文件，用于 ALTER TABLE 后迁移记录布局 */
+    void replaceAll(const std::string& database, const std::string& table,
+                    const std::vector<std::map<std::string, FieldValue>>& records);
+
     /** 返回最近一次 insert 的物理偏移 */
     int64_t lastInsertOffset() const { return lastOffset_; }
 

@@ -25,6 +25,20 @@ AdminPanel::AdminPanel(QWidget *parent)
       privilegeTargetTableEdit_(new QLineEdit(this)),
       privilegeCombo_(new QComboBox(this))
 {
+    databaseEdit_->setObjectName(QStringLiteral("adminDatabaseEdit"));
+    tableEdit_->setObjectName(QStringLiteral("adminTableEdit"));
+    columnEdit_->setObjectName(QStringLiteral("adminColumnEdit"));
+    columnTypeEdit_->setObjectName(QStringLiteral("adminColumnTypeEdit"));
+    defaultEdit_->setObjectName(QStringLiteral("adminDefaultEdit"));
+    notNullCheck_->setObjectName(QStringLiteral("adminNotNullCheck"));
+    indexEdit_->setObjectName(QStringLiteral("adminIndexEdit"));
+    indexColumnsEdit_->setObjectName(QStringLiteral("adminIndexColumnsEdit"));
+    userEdit_->setObjectName(QStringLiteral("adminUserEdit"));
+    passwordEdit_->setObjectName(QStringLiteral("adminPasswordEdit"));
+    privilegeTargetDbEdit_->setObjectName(QStringLiteral("adminPrivilegeDbEdit"));
+    privilegeTargetTableEdit_->setObjectName(QStringLiteral("adminPrivilegeTableEdit"));
+    privilegeCombo_->setObjectName(QStringLiteral("adminPrivilegeCombo"));
+
     databaseEdit_->setPlaceholderText(tr("database"));
     tableEdit_->setPlaceholderText(tr("table"));
     columnEdit_->setPlaceholderText(tr("column"));
@@ -51,6 +65,14 @@ AdminPanel::AdminPanel(QWidget *parent)
     auto *dropColumnButton = new QPushButton(tr("Drop Column"), this);
     auto *createIndexButton = new QPushButton(tr("Create Index"), this);
     auto *dropIndexButton = new QPushButton(tr("Drop Index"), this);
+    useDbButton->setObjectName(QStringLiteral("adminUseDbButton"));
+    createDbButton->setObjectName(QStringLiteral("adminCreateDbButton"));
+    dropDbButton->setObjectName(QStringLiteral("adminDropDbButton"));
+    addColumnButton->setObjectName(QStringLiteral("adminAddColumnButton"));
+    modifyColumnButton->setObjectName(QStringLiteral("adminModifyColumnButton"));
+    dropColumnButton->setObjectName(QStringLiteral("adminDropColumnButton"));
+    createIndexButton->setObjectName(QStringLiteral("adminCreateIndexButton"));
+    dropIndexButton->setObjectName(QStringLiteral("adminDropIndexButton"));
 
     connect(useDbButton, &QPushButton::clicked, this, [this]() {
         emitIfNotEmpty(QStringLiteral("USE %1").arg(databaseEdit_->text().trimmed()));
@@ -62,20 +84,12 @@ AdminPanel::AdminPanel(QWidget *parent)
         emitIfNotEmpty(QStringLiteral("DROP DATABASE %1").arg(databaseEdit_->text().trimmed()));
     });
     connect(addColumnButton, &QPushButton::clicked, this, [this]() {
-        QString sql = QStringLiteral("ALTER TABLE %1 ADD COLUMN %2 %3")
-                          .arg(targetName(), columnEdit_->text().trimmed(), columnTypeEdit_->text().trimmed());
-        if (notNullCheck_->isChecked())
-            sql += QStringLiteral(" NOT NULL");
-        if (!defaultEdit_->text().trimmed().isEmpty())
-            sql += QStringLiteral(" DEFAULT ") + defaultEdit_->text().trimmed();
-        emitIfNotEmpty(sql);
+        emitIfNotEmpty(QStringLiteral("ALTER TABLE %1 ADD COLUMN %2")
+                           .arg(targetName(), columnDefinitionSql()));
     });
     connect(modifyColumnButton, &QPushButton::clicked, this, [this]() {
-        QString sql = QStringLiteral("ALTER TABLE %1 MODIFY COLUMN %2 %3")
-                          .arg(targetName(), columnEdit_->text().trimmed(), columnTypeEdit_->text().trimmed());
-        if (notNullCheck_->isChecked())
-            sql += QStringLiteral(" NOT NULL");
-        emitIfNotEmpty(sql);
+        emitIfNotEmpty(QStringLiteral("ALTER TABLE %1 MODIFY COLUMN %2")
+                           .arg(targetName(), columnDefinitionSql()));
     });
     connect(dropColumnButton, &QPushButton::clicked, this, [this]() {
         emitIfNotEmpty(QStringLiteral("ALTER TABLE %1 DROP COLUMN %2")
@@ -123,6 +137,11 @@ AdminPanel::AdminPanel(QWidget *parent)
     auto *grantButton = new QPushButton(tr("Grant"), this);
     auto *revokeButton = new QPushButton(tr("Revoke"), this);
     auto *refreshButton = new QPushButton(tr("Refresh Tree"), this);
+    createUserButton->setObjectName(QStringLiteral("adminCreateUserButton"));
+    dropUserButton->setObjectName(QStringLiteral("adminDropUserButton"));
+    grantButton->setObjectName(QStringLiteral("adminGrantButton"));
+    revokeButton->setObjectName(QStringLiteral("adminRevokeButton"));
+    refreshButton->setObjectName(QStringLiteral("adminRefreshTreeButton"));
 
     connect(createUserButton, &QPushButton::clicked, this, [this]() {
         emitIfNotEmpty(QStringLiteral("CREATE USER %1 IDENTIFIED BY %2")
@@ -188,8 +207,49 @@ QString AdminPanel::quoteString(const QString &value) const
     return QStringLiteral("'") + escaped + QStringLiteral("'");
 }
 
+bool AdminPanel::looksLikeRawLiteral(const QString &value) const
+{
+    if (value.compare(QStringLiteral("NULL"), Qt::CaseInsensitive) == 0 ||
+        value.compare(QStringLiteral("TRUE"), Qt::CaseInsensitive) == 0 ||
+        value.compare(QStringLiteral("FALSE"), Qt::CaseInsensitive) == 0)
+        return true;
+
+    bool ok = false;
+    value.toDouble(&ok);
+    if (ok)
+        return true;
+
+    return (value.size() >= 2 &&
+            ((value.startsWith('\'') && value.endsWith('\'')) ||
+             (value.startsWith('"') && value.endsWith('"'))));
+}
+
+QString AdminPanel::defaultLiteral() const
+{
+    const QString value = defaultEdit_->text().trimmed();
+    if (value.isEmpty())
+        return QString();
+    if (looksLikeRawLiteral(value))
+        return value;
+    return quoteString(value);
+}
+
+QString AdminPanel::columnDefinitionSql() const
+{
+    QStringList parts;
+    parts << columnEdit_->text().trimmed();
+    parts << columnTypeEdit_->text().trimmed();
+    const QString defaultValue = defaultLiteral();
+    if (!defaultValue.isEmpty())
+        parts << QStringLiteral("DEFAULT") << defaultValue;
+    if (notNullCheck_->isChecked())
+        parts << QStringLiteral("NOT NULL");
+    return parts.join(QStringLiteral(" "));
+}
+
 void AdminPanel::emitIfNotEmpty(const QString &sql)
 {
-    if (!sql.trimmed().isEmpty())
-        emit sqlRequested(sql.trimmed());
+    const QString normalized = sql.simplified();
+    if (!normalized.isEmpty())
+        emit sqlRequested(normalized);
 }

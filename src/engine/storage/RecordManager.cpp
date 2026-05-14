@@ -223,3 +223,21 @@ void RecordManager::remove(const std::string& database, const std::string& table
     char deleted = 1;
     f.write(&deleted, 1);
 }
+
+void RecordManager::replaceAll(const std::string& database, const std::string& table,
+                               const std::vector<std::map<std::string, FieldValue>>& records) {
+    auto defOpt = tblMgr_.describeTable(database, table);
+    if (!defOpt)
+        throw DBException(ErrorCode::TABLE_NOT_FOUND, "Unknown table '" + table + "'");
+
+    auto path = trdPath(dataDir_, database, table);
+    std::ofstream truncate(path, std::ios::binary | std::ios::trunc);
+    if (!truncate)
+        throw DBException(ErrorCode::FILE_IO_ERROR,
+                          "Cannot rewrite record file: " + path);
+    truncate.close();
+
+    lastOffset_ = -1;
+    for (const auto& record : records)
+        insert(database, table, record);
+}

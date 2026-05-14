@@ -23,7 +23,9 @@ signals:
 private:
     QString targetName() const;
     QString quoteString(const QString &value) const;
-    QStringList selectedPrivileges() const;
+    QString defaultLiteral() const;
+    bool looksLikeRawLiteral(const QString &value) const;
+    QString columnDefinitionSql() const;
     void emitIfNotEmpty(const QString &sql);
 
     QLineEdit *databaseEdit_;
