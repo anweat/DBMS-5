@@ -128,6 +128,7 @@ void MainWindow::executeSql(const QString &sql)
 
 void MainWindow::handleResult(const QueryResult &result)
 {
+    tableEditorPanel_->handleExecutionResult(result);
     if (result.type == QueryResult::Type::ERROR)
     {
         statusMetaPanel_->showError(QString::fromStdString(result.message));

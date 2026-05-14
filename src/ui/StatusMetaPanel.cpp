@@ -47,6 +47,7 @@ void StatusMetaPanel::showResultMeta(const QueryResult &result)
         summary = tr("OK, %1 ms").arg(result.elapsedMs);
     }
 
+    summaryLabel_->setStyleSheet(QString());
     summaryLabel_->setText(summary);
     const QString detail = QString::fromStdString(result.message);
     logView_->append(detail.isEmpty() ? summary : detail);
@@ -55,5 +56,6 @@ void StatusMetaPanel::showResultMeta(const QueryResult &result)
 void StatusMetaPanel::showError(const QString &message)
 {
     summaryLabel_->setText(tr("Error"));
+    summaryLabel_->setStyleSheet(QStringLiteral("color: #b00020; font-weight: 600;"));
     logView_->append(QStringLiteral("[ERROR] ") + message);
 }

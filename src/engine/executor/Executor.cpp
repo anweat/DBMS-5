@@ -175,6 +175,8 @@ static FieldValue coerce(const FieldValue &v, const ColumnDefinition &col)
             }
             catch (...)
             {
+                throw DBException(ErrorCode::COLUMN_INVALID,
+                                  "Invalid integer value for column '" + col.name + "'");
             }
         break;
     case FieldType::DOUBLE:
@@ -189,6 +191,8 @@ static FieldValue coerce(const FieldValue &v, const ColumnDefinition &col)
             }
             catch (...)
             {
+                throw DBException(ErrorCode::COLUMN_INVALID,
+                                  "Invalid double value for column '" + col.name + "'");
             }
         break;
     case FieldType::BOOL:

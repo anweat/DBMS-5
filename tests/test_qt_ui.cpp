@@ -2,6 +2,7 @@
 #include "ui/QtSessionAdapter.h"
 
 #include <QApplication>
+#include <QColor>
 #include <QComboBox>
 #include <QHeaderView>
 #include <QLabel>
@@ -233,8 +234,29 @@ void QtUiSmokeTest::adminButtonsAndTableEditorRespectPermissions()
     auto *addRowButton = mustFind<QPushButton>(window, QStringLiteral("tableAddRowButton"));
     auto *saveEditsButton = mustFind<QPushButton>(window, QStringLiteral("tableSaveEditsButton"));
 
-    QVERIFY(editorTable->item(0, 1));
-    editorTable->item(0, 1)->setText(QStringLiteral("alpha_edited"));
+    int idOneRow = -1;
+    for (int row = 0; row < editorTable->rowCount(); ++row)
+    {
+        if (editorTable->item(row, 0) && editorTable->item(row, 0)->text() == QStringLiteral("1"))
+        {
+            idOneRow = row;
+            break;
+        }
+    }
+    QVERIFY(idOneRow >= 0);
+    QVERIFY(editorTable->item(idOneRow, 1));
+    editorTable->item(idOneRow, 1)->setText(QStringLiteral("this_value_is_longer_than_twenty_chars"));
+    QTest::mouseClick(saveEditsButton, Qt::LeftButton);
+    QCoreApplication::processEvents();
+    QVERIFY2(editorTable->item(idOneRow, 1)->foreground().color() == QColor(QStringLiteral("#b00020")),
+             statusLog->toPlainText().toUtf8().constData());
+    QVERIFY(editorTable->item(idOneRow, 1)->toolTip().contains(QStringLiteral("Value too long")));
+    execSql(QStringLiteral("SELECT name FROM items WHERE id = 1"));
+    QVERIFY2(resultTable->rowCount() == 1, statusLog->toPlainText().toUtf8().constData());
+    QVERIFY(resultTable->item(0, 0));
+    QCOMPARE(resultTable->item(0, 0)->text(), QStringLiteral("alpha"));
+
+    editorTable->item(idOneRow, 1)->setText(QStringLiteral("alpha_edited"));
     QTest::mouseClick(saveEditsButton, Qt::LeftButton);
     QCoreApplication::processEvents();
 

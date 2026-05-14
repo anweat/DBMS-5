@@ -1,11 +1,14 @@
 #include "TableEditorPanel.h"
 
 #include <QApplication>
+#include <QBrush>
+#include <QColor>
 #include <QGroupBox>
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QTableWidget>
 #include <QVBoxLayout>
 
@@ -26,7 +29,10 @@ TableEditorPanel::TableEditorPanel(QWidget *parent)
     table_->verticalHeader()->setVisible(false);
     connect(table_, &QTableWidget::cellChanged, this, [this](int row, int column) {
         if (!loading_)
+        {
+            clearCellMark(row, column);
             changedCells_.insert(QString::number(row) + QStringLiteral(":") + QString::number(column));
+        }
     });
 
     auto *addButton = new QPushButton(tr("Add Row"), this);
@@ -62,7 +68,10 @@ void TableEditorPanel::loadTable(const QString &database, const QString &table, 
     columnNames_.clear();
     originalRows_.clear();
     changedCells_.clear();
+    pendingEdits_.clear();
+    saveHadErrors_ = false;
 
+    titleLabel_->setStyleSheet(QString());
     titleLabel_->setText(database + QStringLiteral(".") + table);
     table_->clear();
     table_->setColumnCount(static_cast<int>(result.columns.size()));
@@ -145,11 +154,14 @@ void TableEditorPanel::saveChanges()
     table_->closePersistentEditor(table_->currentItem());
     QApplication::processEvents();
 
+    pendingEdits_.clear();
+    saveHadErrors_ = false;
     bool emittedSql = false;
     for (int row = originalRowCount_; row < table_->rowCount(); ++row)
     {
         QStringList cols;
         QStringList values;
+        QVector<QPair<int, int>> cells;
         for (int col = 0; col < columnNames_.size(); ++col)
         {
             const QString value = itemText(row, col).trimmed();
@@ -157,9 +169,11 @@ void TableEditorPanel::saveChanges()
                 continue;
             cols << columnNames_[col];
             values << literal(value);
+            cells.push_back({row, col});
         }
         if (!cols.isEmpty())
         {
+            enqueuePendingEdit(cells);
             emit sqlRequested(QStringLiteral("INSERT INTO %1 (%2) VALUES (%3)")
                                   .arg(qualifiedTableName(), cols.join(QStringLiteral(", ")), values.join(QStringLiteral(", "))));
             emittedSql = true;
@@ -177,14 +191,31 @@ void TableEditorPanel::saveChanges()
             continue;
         if (itemText(row, col) == originalItemText(row, col))
             continue;
+        enqueuePendingEdit({{row, col}});
         emit sqlRequested(QStringLiteral("UPDATE %1 SET %2 = %3 WHERE %4")
                               .arg(qualifiedTableName(), columnNames_[col], literal(itemText(row, col)), keyWhereClause(row)));
         emittedSql = true;
     }
 
-    changedCells_.clear();
-    if (emittedSql)
+    if (!saveHadErrors_)
+        changedCells_.clear();
+    if (emittedSql && !saveHadErrors_)
         emit reloadRequested(database_, tableName_);
+}
+
+void TableEditorPanel::handleExecutionResult(const QueryResult &result)
+{
+    if (pendingEdits_.isEmpty())
+        return;
+
+    PendingEdit pending = pendingEdits_.takeFirst();
+    if (result.type == QueryResult::Type::ERROR)
+    {
+        saveHadErrors_ = true;
+        markCells(pending.cells, QString::fromStdString(result.message));
+        titleLabel_->setText(tr("%1.%2 - save failed").arg(database_, tableName_));
+        titleLabel_->setStyleSheet(QStringLiteral("color: #b00020; font-weight: 600;"));
+    }
 }
 
 QString TableEditorPanel::itemText(int row, int column) const
@@ -231,4 +262,42 @@ QString TableEditorPanel::keyWhereClause(int row) const
 QString TableEditorPanel::qualifiedTableName() const
 {
     return database_.isEmpty() ? tableName_ : database_ + QStringLiteral(".") + tableName_;
+}
+
+void TableEditorPanel::enqueuePendingEdit(const QVector<QPair<int, int>> &cells)
+{
+    pendingEdits_.push_back({cells});
+}
+
+void TableEditorPanel::markCells(const QVector<QPair<int, int>> &cells, const QString &message)
+{
+    const QSignalBlocker blocker(table_);
+    for (const auto &cell : cells)
+    {
+        QTableWidgetItem *item = table_->item(cell.first, cell.second);
+        if (!item)
+        {
+            item = new QTableWidgetItem;
+            table_->setItem(cell.first, cell.second, item);
+        }
+        item->setForeground(QBrush(QColor(QStringLiteral("#b00020"))));
+        item->setBackground(QBrush(QColor(QStringLiteral("#ffe6e6"))));
+        item->setToolTip(message);
+    }
+}
+
+void TableEditorPanel::clearCellMark(int row, int column)
+{
+    const QSignalBlocker blocker(table_);
+    QTableWidgetItem *item = table_->item(row, column);
+    if (!item)
+        return;
+    item->setForeground(QBrush());
+    item->setBackground(QBrush());
+    item->setToolTip(QString());
+    if (titleLabel_->styleSheet().contains(QStringLiteral("#b00020")))
+    {
+        titleLabel_->setText(database_ + QStringLiteral(".") + tableName_);
+        titleLabel_->setStyleSheet(QString());
+    }
 }
