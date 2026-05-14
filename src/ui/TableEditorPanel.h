@@ -19,6 +19,7 @@ public slots:
 
 signals:
     void sqlRequested(const QString &sql);
+    void reloadRequested(const QString &database, const QString &table);
 
 private:
     void addRow();
@@ -26,6 +27,7 @@ private:
     void saveChanges();
     QString normalizeColumnName(const QString &name) const;
     QString itemText(int row, int column) const;
+    QString originalItemText(int row, int column) const;
     QString literal(const QString &value) const;
     QString keyWhereClause(int row) const;
     QString qualifiedTableName() const;
@@ -35,6 +37,7 @@ private:
     QString database_;
     QString tableName_;
     QStringList columnNames_;
+    QVector<QStringList> originalRows_;
     int originalRowCount_ = 0;
     bool loading_ = false;
     QSet<QString> changedCells_;

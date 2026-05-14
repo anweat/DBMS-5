@@ -1,5 +1,6 @@
 #include "TableEditorPanel.h"
 
+#include <QApplication>
 #include <QGroupBox>
 #include <QHeaderView>
 #include <QHBoxLayout>
@@ -59,6 +60,7 @@ void TableEditorPanel::loadTable(const QString &database, const QString &table, 
     database_ = database;
     tableName_ = table;
     columnNames_.clear();
+    originalRows_.clear();
     changedCells_.clear();
 
     titleLabel_->setText(database + QStringLiteral(".") + table);
@@ -78,6 +80,7 @@ void TableEditorPanel::loadTable(const QString &database, const QString &table, 
     for (int row = 0; row < static_cast<int>(result.rows.size()); ++row)
     {
         const Row &values = result.rows[static_cast<size_t>(row)];
+        QStringList originalRow;
         for (int col = 0; col < static_cast<int>(result.columns.size()); ++col)
         {
             QString text;
@@ -95,8 +98,10 @@ void TableEditorPanel::loadTable(const QString &database, const QString &table, 
                 else
                     text = QString::fromStdString(std::get<std::string>(value));
             }
+            originalRow << text;
             table_->setItem(row, col, new QTableWidgetItem(text));
         }
+        originalRows_.push_back(originalRow);
     }
     originalRowCount_ = table_->rowCount();
     table_->resizeColumnsToContents();
@@ -135,6 +140,12 @@ void TableEditorPanel::saveChanges()
     if (tableName_.isEmpty() || columnNames_.isEmpty())
         return;
 
+    if (QWidget *focus = QApplication::focusWidget())
+        focus->clearFocus();
+    table_->closePersistentEditor(table_->currentItem());
+    QApplication::processEvents();
+
+    bool emittedSql = false;
     for (int row = originalRowCount_; row < table_->rowCount(); ++row)
     {
         QStringList cols;
@@ -148,8 +159,11 @@ void TableEditorPanel::saveChanges()
             values << literal(value);
         }
         if (!cols.isEmpty())
+        {
             emit sqlRequested(QStringLiteral("INSERT INTO %1 (%2) VALUES (%3)")
                                   .arg(qualifiedTableName(), cols.join(QStringLiteral(", ")), values.join(QStringLiteral(", "))));
+            emittedSql = true;
+        }
     }
 
     for (const QString &cell : changedCells_)
@@ -161,15 +175,32 @@ void TableEditorPanel::saveChanges()
         int col = parts[1].toInt();
         if (row >= originalRowCount_ || col >= columnNames_.size())
             continue;
+        if (itemText(row, col) == originalItemText(row, col))
+            continue;
         emit sqlRequested(QStringLiteral("UPDATE %1 SET %2 = %3 WHERE %4")
                               .arg(qualifiedTableName(), columnNames_[col], literal(itemText(row, col)), keyWhereClause(row)));
+        emittedSql = true;
     }
+
+    changedCells_.clear();
+    if (emittedSql)
+        emit reloadRequested(database_, tableName_);
 }
 
 QString TableEditorPanel::itemText(int row, int column) const
 {
     auto *item = table_->item(row, column);
     return item ? item->text() : QString();
+}
+
+QString TableEditorPanel::originalItemText(int row, int column) const
+{
+    if (row < 0 || row >= originalRows_.size())
+        return QString();
+    const QStringList &values = originalRows_[row];
+    if (column < 0 || column >= values.size())
+        return QString();
+    return values[column];
 }
 
 QString TableEditorPanel::normalizeColumnName(const QString &name) const
@@ -193,7 +224,8 @@ QString TableEditorPanel::literal(const QString &value) const
 
 QString TableEditorPanel::keyWhereClause(int row) const
 {
-    return columnNames_.first() + QStringLiteral(" = ") + literal(itemText(row, 0));
+    const QString keyValue = row < originalRowCount_ ? originalItemText(row, 0) : itemText(row, 0);
+    return columnNames_.first() + QStringLiteral(" = ") + literal(keyValue);
 }
 
 QString TableEditorPanel::qualifiedTableName() const

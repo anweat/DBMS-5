@@ -233,6 +233,16 @@ void QtUiSmokeTest::adminButtonsAndTableEditorRespectPermissions()
     auto *addRowButton = mustFind<QPushButton>(window, QStringLiteral("tableAddRowButton"));
     auto *saveEditsButton = mustFind<QPushButton>(window, QStringLiteral("tableSaveEditsButton"));
 
+    QVERIFY(editorTable->item(0, 1));
+    editorTable->item(0, 1)->setText(QStringLiteral("alpha_edited"));
+    QTest::mouseClick(saveEditsButton, Qt::LeftButton);
+    QCoreApplication::processEvents();
+
+    execSql(QStringLiteral("SELECT name FROM items WHERE id = 1"));
+    QVERIFY2(resultTable->rowCount() == 1, statusLog->toPlainText().toUtf8().constData());
+    QVERIFY(resultTable->item(0, 0));
+    QCOMPARE(resultTable->item(0, 0)->text(), QStringLiteral("alpha_edited"));
+
     QTest::mouseClick(addRowButton, Qt::LeftButton);
     const int newRow = editorTable->rowCount() - 1;
     QVERIFY(newRow >= 0);
@@ -248,6 +258,27 @@ void QtUiSmokeTest::adminButtonsAndTableEditorRespectPermissions()
     QVERIFY(resultTable->item(0, 1));
     QCOMPARE(resultTable->item(0, 0)->text(), QStringLiteral("beta"));
     QCOMPARE(resultTable->item(0, 1)->text(), QStringLiteral("typed"));
+
+    QVERIFY(QMetaObject::invokeMethod(adapter, "loadTable", Qt::DirectConnection,
+                                      Q_ARG(QString, QStringLiteral("qt_admin_pipe")),
+                                      Q_ARG(QString, QStringLiteral("items"))));
+    int idTwoRow = -1;
+    for (int row = 0; row < editorTable->rowCount(); ++row)
+    {
+        if (editorTable->item(row, 0) && editorTable->item(row, 0)->text() == QStringLiteral("2"))
+        {
+            idTwoRow = row;
+            break;
+        }
+    }
+    QVERIFY(idTwoRow >= 0);
+    editorTable->item(idTwoRow, 0)->setText(QStringLiteral("3"));
+    QTest::mouseClick(saveEditsButton, Qt::LeftButton);
+    QCoreApplication::processEvents();
+    execSql(QStringLiteral("SELECT name, note FROM items WHERE id = 3"));
+    QVERIFY2(resultTable->rowCount() == 1, statusLog->toPlainText().toUtf8().constData());
+    QVERIFY(resultTable->item(0, 0));
+    QCOMPARE(resultTable->item(0, 0)->text(), QStringLiteral("beta"));
 
     execSql(QStringLiteral("DROP DATABASE qt_admin_pipe"));
 }

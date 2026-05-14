@@ -97,6 +97,8 @@ MainWindow::MainWindow(QWidget *parent)
             this, &MainWindow::executeSql);
     connect(tableEditorPanel_, &TableEditorPanel::sqlRequested,
             this, &MainWindow::executeSql);
+    connect(tableEditorPanel_, &TableEditorPanel::reloadRequested,
+            adapter_, &QtSessionAdapter::loadTable);
     connect(adminPanel_, &AdminPanel::sqlRequested,
             this, &MainWindow::executeSql);
     connect(adminPanel_, &AdminPanel::refreshRequested,
