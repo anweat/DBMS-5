@@ -46,6 +46,7 @@ private:
     QueryResult execCreateTable(const CreateTableNode &n, Session &s);
     QueryResult execDropTable(const DropTableNode &n, Session &s);
     QueryResult execShowTables(Session &s);
+    QueryResult execShowIndexes(const ShowIndexesNode &n, Session &s);
     QueryResult execDescribeTable(const DescribeTableNode &n, Session &s);
     QueryResult execAlterTable(const AlterTableNode &n, Session &s);
 

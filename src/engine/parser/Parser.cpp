@@ -900,9 +900,9 @@ namespace
                 n->type = NodeType::SHOW_TABLES;
                 return n;
             }
-            if (cur().type == TokenType::IDENTIFIER)
+            if (cur().type == TokenType::IDENTIFIER || cur().type == TokenType::INDEX)
             {
-                std::string word = cur().value;
+                std::string word = cur().type == TokenType::INDEX ? "INDEX" : cur().value;
                 std::transform(word.begin(), word.end(), word.begin(),
                                [](unsigned char c) { return std::toupper(c); });
                 if (word == "USERS")
@@ -912,9 +912,24 @@ namespace
                     n->type = NodeType::SHOW_USERS;
                     return n;
                 }
+                if (word == "INDEXES" || word == "INDEX")
+                {
+                    advance();
+                    if (match(TokenType::FROM) || match(TokenType::ON))
+                    {
+                        auto n = std::make_unique<ShowIndexesNode>();
+                        n->type = NodeType::SHOW_INDEXES;
+                        auto [db, tbl] = parseTableRef();
+                        n->database = db;
+                        n->table = tbl;
+                        return n;
+                    }
+                    throw DBException(ErrorCode::SQL_SYNTAX_ERROR,
+                                      "Expected FROM <table> after SHOW INDEXES");
+                }
             }
             throw DBException(ErrorCode::SQL_SYNTAX_ERROR,
-                              "Expected DATABASES, TABLES, or USERS after SHOW");
+                              "Expected DATABASES, TABLES, USERS, or INDEXES after SHOW");
         }
 
         // ---- USE ----

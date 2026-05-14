@@ -1,6 +1,7 @@
 #include "DatabaseTreePanel.h"
 
 #include <QHBoxLayout>
+#include <QHeaderView>
 #include <QPushButton>
 #include <QTreeWidget>
 #include <QVBoxLayout>
@@ -19,6 +20,10 @@ DatabaseTreePanel::DatabaseTreePanel(QWidget *parent)
 {
     tree_->setObjectName(QStringLiteral("databaseTree"));
     tree_->setHeaderLabel(tr("Objects"));
+    tree_->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    tree_->setTextElideMode(Qt::ElideNone);
+    tree_->header()->setStretchLastSection(false);
+    tree_->header()->setSectionResizeMode(QHeaderView::ResizeToContents);
     auto *refreshButton = new QPushButton(tr("Refresh"), this);
     refreshButton->setObjectName(QStringLiteral("catalogRefreshButton"));
 
@@ -60,7 +65,9 @@ void DatabaseTreePanel::setCatalog(const CatalogSnapshot &catalog)
                     label += QStringLiteral("  [") + column.key + QStringLiteral("]");
                 new QTreeWidgetItem(columnsItem, {label});
             }
-            new QTreeWidgetItem(tableItem, {tr("Indexes")});
+            auto *indexesItem = new QTreeWidgetItem(tableItem, {tr("Indexes")});
+            for (const auto &index : table.indexes)
+                new QTreeWidgetItem(indexesItem, {index});
         }
     }
 
@@ -75,6 +82,8 @@ void DatabaseTreePanel::setCatalog(const CatalogSnapshot &catalog)
 
     tree_->expandItem(dbRoot);
     tree_->expandItem(usersRoot);
+    tree_->expandAll();
+    tree_->resizeColumnToContents(0);
 }
 
 void DatabaseTreePanel::openCurrentItem(QTreeWidgetItem *item)

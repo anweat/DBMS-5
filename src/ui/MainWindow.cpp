@@ -10,6 +10,7 @@
 #include "TableEditorPanel.h"
 
 #include <QMenuBar>
+#include <QScrollArea>
 #include <QSplitter>
 #include <QStatusBar>
 #include <QTabWidget>
@@ -41,14 +42,23 @@ MainWindow::MainWindow(QWidget *parent)
 
     auto *sideTabs = new QTabWidget(mainSplitter);
     sideTabs->addTab(statusMetaPanel_, tr("Status"));
-    sideTabs->addTab(adminPanel_, tr("Admin"));
+
+    auto *adminScroll = new QScrollArea(sideTabs);
+    adminScroll->setObjectName(QStringLiteral("adminPanelScrollArea"));
+    adminScroll->setWidget(adminPanel_);
+    adminScroll->setWidgetResizable(true);
+    adminScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    adminScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    sideTabs->addTab(adminScroll, tr("Admin"));
 
     mainSplitter->addWidget(leftPanel);
     mainSplitter->addWidget(workTabs);
     mainSplitter->addWidget(sideTabs);
-    mainSplitter->setStretchFactor(0, 0);
-    mainSplitter->setStretchFactor(1, 1);
-    mainSplitter->setStretchFactor(2, 0);
+    mainSplitter->setObjectName(QStringLiteral("mainSplitter"));
+    mainSplitter->setChildrenCollapsible(false);
+    mainSplitter->setStretchFactor(0, 2);
+    mainSplitter->setStretchFactor(1, 6);
+    mainSplitter->setStretchFactor(2, 3);
 
     setCentralWidget(mainSplitter);
     setWindowTitle(tr("DBMS Qt"));

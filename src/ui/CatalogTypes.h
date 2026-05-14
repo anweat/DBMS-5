@@ -15,6 +15,7 @@ struct CatalogTable
 {
     QString name;
     QVector<CatalogColumn> columns;
+    QVector<QString> indexes;
 };
 
 struct CatalogDatabase

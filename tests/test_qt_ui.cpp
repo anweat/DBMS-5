@@ -3,12 +3,15 @@
 
 #include <QApplication>
 #include <QComboBox>
+#include <QHeaderView>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QSplitter>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QTextEdit>
 #include <QTest>
+#include <QTreeWidget>
 
 class QtUiSmokeTest : public QObject
 {
@@ -27,6 +30,26 @@ T *mustFind(QObject &root, const QString &name)
     auto *object = root.findChild<T *>(name);
     Q_ASSERT(object);
     return object;
+}
+
+QTreeWidgetItem *findTreeItem(QTreeWidgetItem *root, const QString &text)
+{
+    if (!root)
+        return nullptr;
+    if (root->text(0).contains(text))
+        return root;
+    for (int i = 0; i < root->childCount(); ++i)
+        if (auto *found = findTreeItem(root->child(i), text))
+            return found;
+    return nullptr;
+}
+
+QTreeWidgetItem *findTreeItem(QTreeWidget *tree, const QString &text)
+{
+    for (int i = 0; i < tree->topLevelItemCount(); ++i)
+        if (auto *found = findTreeItem(tree->topLevelItem(i), text))
+            return found;
+    return nullptr;
 }
 }
 
@@ -87,7 +110,15 @@ void QtUiSmokeTest::adminButtonsAndTableEditorRespectPermissions()
     auto *executeButton = mustFind<QPushButton>(window, QStringLiteral("executeSqlButton"));
     auto *resultTable = mustFind<QTableWidget>(window, QStringLiteral("resultTable"));
     auto *statusLog = mustFind<QTextEdit>(window, QStringLiteral("statusLogView"));
+    auto *tree = mustFind<QTreeWidget>(window, QStringLiteral("databaseTree"));
+    auto *mainSplitter = mustFind<QSplitter>(window, QStringLiteral("mainSplitter"));
     QVERIFY(adapter);
+
+    QCOMPARE(tree->horizontalScrollBarPolicy(), Qt::ScrollBarAsNeeded);
+    QCOMPARE(resultTable->horizontalScrollBarPolicy(), Qt::ScrollBarAsNeeded);
+    QVERIFY(!mainSplitter->childrenCollapsible());
+    QCOMPARE(mainSplitter->sizes().size(), 3);
+    QVERIFY(mainSplitter->sizes().at(1) > mainSplitter->sizes().at(0));
 
     auto execSql = [&](const QString &sql) {
         sqlEditor->setPlainText(sql);
@@ -110,6 +141,7 @@ void QtUiSmokeTest::adminButtonsAndTableEditorRespectPermissions()
     execSql(QStringLiteral("USE qt_admin_pipe"));
     execSql(QStringLiteral("CREATE TABLE items (id INT PRIMARY KEY, name VARCHAR(20))"));
     execSql(QStringLiteral("INSERT INTO items (id, name) VALUES (1, 'alpha')"));
+    execSql(QStringLiteral("CREATE INDEX idx_items_name ON items (name)"));
 
     auto *adminDb = mustFind<QLineEdit>(window, QStringLiteral("adminDatabaseEdit"));
     auto *adminTable = mustFind<QLineEdit>(window, QStringLiteral("adminTableEdit"));
@@ -125,6 +157,17 @@ void QtUiSmokeTest::adminButtonsAndTableEditorRespectPermissions()
     adminDefault->setText(QStringLiteral("fresh"));
     QTest::mouseClick(addColumnButton, Qt::LeftButton);
     QCoreApplication::processEvents();
+
+    QVERIFY(QMetaObject::invokeMethod(adapter, "refreshCatalog", Qt::DirectConnection));
+    QVERIFY(findTreeItem(tree, QStringLiteral("qt_admin_pipe")));
+    QVERIFY(findTreeItem(tree, QStringLiteral("items")));
+    QVERIFY(findTreeItem(tree, QStringLiteral("note")));
+    QVERIFY(findTreeItem(tree, QStringLiteral("idx_items_name")));
+    QVERIFY(findTreeItem(tree, QStringLiteral("Users / Privileges")));
+    QVERIFY(findTreeItem(tree, QStringLiteral("Indexes")));
+    QVERIFY(findTreeItem(tree, QStringLiteral("Columns")));
+    QVERIFY(findTreeItem(tree, QStringLiteral("items"))->isExpanded());
+    QVERIFY(tree->header()->sectionSize(0) > 0);
 
     execSql(QStringLiteral("SELECT note FROM items WHERE id = 1"));
     QCOMPARE(resultTable->rowCount(), 1);

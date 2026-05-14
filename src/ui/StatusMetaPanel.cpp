@@ -12,7 +12,8 @@ StatusMetaPanel::StatusMetaPanel(QWidget *parent)
 {
     logView_->setObjectName(QStringLiteral("statusLogView"));
     logView_->setReadOnly(true);
-    logView_->setMinimumWidth(220);
+    logView_->setLineWrapMode(QTextEdit::NoWrap);
+    logView_->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     summaryLabel_->setWordWrap(true);
 
     auto *group = new QGroupBox(tr("Status"), this);

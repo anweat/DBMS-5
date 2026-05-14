@@ -18,7 +18,10 @@ TableEditorPanel::TableEditorPanel(QWidget *parent)
 {
     table_->setObjectName(QStringLiteral("tableEditorTable"));
     table_->setSelectionBehavior(QAbstractItemView::SelectRows);
-    table_->horizontalHeader()->setStretchLastSection(true);
+    table_->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    table_->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    table_->horizontalHeader()->setStretchLastSection(false);
+    table_->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     table_->verticalHeader()->setVisible(false);
     connect(table_, &QTableWidget::cellChanged, this, [this](int row, int column) {
         if (!loading_)

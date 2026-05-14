@@ -69,6 +69,24 @@ void QtSessionAdapter::refreshCatalog()
                         table.columns.push_back(column);
                     }
                 }
+
+                QueryResult indexes = engine_.execute("SHOW INDEXES FROM " + table.name.toStdString(), session_);
+                if (indexes.type != QueryResult::Type::ERROR)
+                {
+                    for (const Row &idxRow : indexes.rows)
+                    {
+                        QString indexName;
+                        QString columns;
+                        if (idxRow.size() > 0 && std::holds_alternative<std::string>(idxRow[0]))
+                            indexName = QString::fromStdString(std::get<std::string>(idxRow[0]));
+                        if (idxRow.size() > 2 && std::holds_alternative<std::string>(idxRow[2]))
+                            columns = QString::fromStdString(std::get<std::string>(idxRow[2]));
+                        if (!indexName.isEmpty())
+                            table.indexes.push_back(columns.isEmpty()
+                                                        ? indexName
+                                                        : indexName + QStringLiteral("  (") + columns + QStringLiteral(")"));
+                    }
+                }
                 db.tables.push_back(table);
             }
         }

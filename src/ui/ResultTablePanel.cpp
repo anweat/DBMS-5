@@ -2,6 +2,7 @@
 
 #include <QGroupBox>
 #include <QHeaderView>
+#include <QScrollBar>
 #include <QTableWidget>
 #include <QVBoxLayout>
 
@@ -12,7 +13,10 @@ ResultTablePanel::ResultTablePanel(QWidget *parent)
     table_->setObjectName(QStringLiteral("resultTable"));
     table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     table_->setSelectionBehavior(QAbstractItemView::SelectRows);
-    table_->horizontalHeader()->setStretchLastSection(true);
+    table_->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    table_->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    table_->horizontalHeader()->setStretchLastSection(false);
+    table_->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     table_->verticalHeader()->setVisible(false);
 
     auto *group = new QGroupBox(tr("Result"), this);

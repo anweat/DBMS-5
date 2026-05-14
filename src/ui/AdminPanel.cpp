@@ -2,11 +2,13 @@
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QFrame>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QVBoxLayout>
 
 AdminPanel::AdminPanel(QWidget *parent)
@@ -114,10 +116,19 @@ AdminPanel::AdminPanel(QWidget *parent)
     schemaButtons->addWidget(createIndexButton);
     schemaButtons->addWidget(dropIndexButton);
 
+    auto *schemaButtonWidget = new QWidget(this);
+    schemaButtonWidget->setLayout(schemaButtons);
+    auto *schemaButtonScroll = new QScrollArea(this);
+    schemaButtonScroll->setWidget(schemaButtonWidget);
+    schemaButtonScroll->setWidgetResizable(true);
+    schemaButtonScroll->setFrameShape(QFrame::NoFrame);
+    schemaButtonScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    schemaButtonScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+
     auto *schemaGroup = new QGroupBox(tr("Schema"), this);
     auto *schemaLayout = new QVBoxLayout(schemaGroup);
     schemaLayout->addLayout(schemaForm);
-    schemaLayout->addLayout(schemaButtons);
+    schemaLayout->addWidget(schemaButtonScroll);
 
     passwordEdit_->setEchoMode(QLineEdit::Password);
     privilegeTargetDbEdit_->setPlaceholderText(tr("* or database"));
@@ -174,10 +185,19 @@ AdminPanel::AdminPanel(QWidget *parent)
     userButtons->addWidget(revokeButton);
     userButtons->addWidget(refreshButton);
 
+    auto *userButtonWidget = new QWidget(this);
+    userButtonWidget->setLayout(userButtons);
+    auto *userButtonScroll = new QScrollArea(this);
+    userButtonScroll->setWidget(userButtonWidget);
+    userButtonScroll->setWidgetResizable(true);
+    userButtonScroll->setFrameShape(QFrame::NoFrame);
+    userButtonScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    userButtonScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+
     auto *userGroup = new QGroupBox(tr("Users / Privileges"), this);
     auto *userLayout = new QVBoxLayout(userGroup);
     userLayout->addLayout(userForm);
-    userLayout->addLayout(userButtons);
+    userLayout->addWidget(userButtonScroll);
 
     auto *layout = new QVBoxLayout(this);
     layout->addWidget(schemaGroup);

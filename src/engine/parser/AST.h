@@ -144,6 +144,7 @@ enum class NodeType
     CREATE_TABLE,
     DROP_TABLE,
     SHOW_TABLES,
+    SHOW_INDEXES,
     DESCRIBE_TABLE,
     ALTER_TABLE,
     // DDL – 索引
@@ -226,6 +227,12 @@ struct DropTableNode : ASTNode
 
 struct ShowTablesNode : ASTNode
 {
+};
+
+struct ShowIndexesNode : ASTNode
+{
+    std::string table;
+    std::string database;
 };
 
 struct DescribeTableNode : ASTNode

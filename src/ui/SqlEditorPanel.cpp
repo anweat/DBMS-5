@@ -17,6 +17,8 @@ SqlEditorPanel::SqlEditorPanel(QWidget *parent)
     examples_->setObjectName(QStringLiteral("sqlExamples"));
     executeButton_->setObjectName(QStringLiteral("executeSqlButton"));
     editor_->setAcceptRichText(false);
+    editor_->setLineWrapMode(QTextEdit::NoWrap);
+    editor_->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     editor_->setPlaceholderText(tr("Write SQL here"));
     editor_->setMinimumHeight(120);
 

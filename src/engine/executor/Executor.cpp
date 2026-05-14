@@ -329,6 +329,8 @@ QueryResult Executor::execute(const ASTNode &ast, Session &session)
         return execDropTable(static_cast<const DropTableNode &>(ast), session);
     case NodeType::SHOW_TABLES:
         return execShowTables(session);
+    case NodeType::SHOW_INDEXES:
+        return execShowIndexes(static_cast<const ShowIndexesNode &>(ast), session);
     case NodeType::DESCRIBE_TABLE:
         return execDescribeTable(static_cast<const DescribeTableNode &>(ast), session);
     case NodeType::ALTER_TABLE:
@@ -508,6 +510,43 @@ QueryResult Executor::execShowTables(Session &s)
     r.columns.push_back({"Tables_in_" + db, FieldType::VARCHAR});
     for (const auto &t : tables)
         r.rows.push_back({FieldValue{t}});
+    r.rowCount = static_cast<int>(r.rows.size());
+    return r;
+}
+
+QueryResult Executor::execShowIndexes(const ShowIndexesNode &n, Session &s)
+{
+    requireAuthenticated(s);
+    std::string db = resolveDb(n.database, s);
+    if (!tblMgr_.tableExists(db, n.table))
+        throw DBException(ErrorCode::TABLE_NOT_FOUND, "Unknown table '" + n.table + "'");
+
+    auto indexes = idxMgr_.listIndexes(db, n.table);
+    QueryResult r;
+    r.type = QueryResult::Type::SELECT;
+    r.columns = {
+        {"Index", FieldType::VARCHAR},
+        {"Table", FieldType::VARCHAR},
+        {"Columns", FieldType::VARCHAR},
+        {"Unique", FieldType::VARCHAR},
+    };
+
+    for (const auto &idx : indexes)
+    {
+        std::string columns;
+        for (size_t i = 0; i < idx.columns.size(); ++i)
+        {
+            if (i > 0)
+                columns += ",";
+            columns += idx.columns[i];
+        }
+        r.rows.push_back({
+            FieldValue{idx.name},
+            FieldValue{n.table},
+            FieldValue{columns},
+            FieldValue{idx.unique ? std::string("YES") : std::string("NO")},
+        });
+    }
     r.rowCount = static_cast<int>(r.rows.size());
     return r;
 }
