@@ -2,6 +2,7 @@
 
 #include "AdminPanel.h"
 #include "DatabaseTreePanel.h"
+#include "ObjectDetailPanel.h"
 #include "QtSessionAdapter.h"
 #include "ResultTablePanel.h"
 #include "SessionPanel.h"
@@ -22,6 +23,7 @@ MainWindow::MainWindow(QWidget *parent)
       adapter_(new QtSessionAdapter(QStringLiteral("data"), this)),
       adminPanel_(new AdminPanel(this)),
       databaseTreePanel_(new DatabaseTreePanel(this)),
+      objectDetailPanel_(new ObjectDetailPanel(this)),
       sessionPanel_(new SessionPanel(this)),
       sqlEditorPanel_(new SqlEditorPanel(this)),
       resultTablePanel_(new ResultTablePanel(this)),
@@ -41,6 +43,7 @@ MainWindow::MainWindow(QWidget *parent)
     workTabs->addTab(sqlEditorPanel_, tr("SQL"));
 
     auto *sideTabs = new QTabWidget(mainSplitter);
+    sideTabs->addTab(objectDetailPanel_, tr("Info"));
     sideTabs->addTab(statusMetaPanel_, tr("Status"));
 
     auto *adminScroll = new QScrollArea(sideTabs);
@@ -84,6 +87,12 @@ MainWindow::MainWindow(QWidget *parent)
             adapter_, &QtSessionAdapter::refreshCatalog);
     connect(databaseTreePanel_, &DatabaseTreePanel::tableOpenRequested,
             adapter_, &QtSessionAdapter::loadTable);
+    connect(databaseTreePanel_, &DatabaseTreePanel::databaseUseRequested,
+            this, [this](const QString &database) {
+                executeSql(QStringLiteral("USE %1").arg(database));
+            });
+    connect(databaseTreePanel_, &DatabaseTreePanel::objectDetailRequested,
+            objectDetailPanel_, &ObjectDetailPanel::showObject);
     connect(databaseTreePanel_, &DatabaseTreePanel::sqlRequested,
             this, &MainWindow::executeSql);
     connect(tableEditorPanel_, &TableEditorPanel::sqlRequested,

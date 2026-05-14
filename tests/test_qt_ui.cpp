@@ -4,6 +4,7 @@
 #include <QApplication>
 #include <QComboBox>
 #include <QHeaderView>
+#include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
 #include <QSplitter>
@@ -140,6 +141,7 @@ void QtUiSmokeTest::adminButtonsAndTableEditorRespectPermissions()
     execSql(QStringLiteral("CREATE DATABASE qt_admin_pipe"));
     execSql(QStringLiteral("USE qt_admin_pipe"));
     execSql(QStringLiteral("CREATE TABLE items (id INT PRIMARY KEY, name VARCHAR(20))"));
+    execSql(QStringLiteral("CREATE TABLE hidden_items (id INT PRIMARY KEY, name VARCHAR(20))"));
     execSql(QStringLiteral("INSERT INTO items (id, name) VALUES (1, 'alpha')"));
     execSql(QStringLiteral("CREATE INDEX idx_items_name ON items (name)"));
 
@@ -169,6 +171,22 @@ void QtUiSmokeTest::adminButtonsAndTableEditorRespectPermissions()
     QVERIFY(findTreeItem(tree, QStringLiteral("items"))->isExpanded());
     QVERIFY(tree->header()->sectionSize(0) > 0);
 
+    auto *detailTitle = mustFind<QLabel>(window, QStringLiteral("objectDetailTitle"));
+    auto *detailView = mustFind<QTextEdit>(window, QStringLiteral("objectDetailView"));
+    auto clickTreeItem = [&](QTreeWidgetItem *item) {
+        QVERIFY(item);
+        tree->scrollToItem(item);
+        tree->setCurrentItem(item);
+        QCoreApplication::processEvents();
+    };
+
+    clickTreeItem(findTreeItem(tree, QStringLiteral("qt_admin_pipe")));
+    QVERIFY(detailView->toPlainText().contains(QStringLiteral("Database: qt_admin_pipe")));
+    clickTreeItem(findTreeItem(tree, QStringLiteral("note")));
+    QVERIFY(detailView->toPlainText().contains(QStringLiteral("Column: note")));
+    clickTreeItem(findTreeItem(tree, QStringLiteral("idx_items_name")));
+    QVERIFY(detailTitle->text().contains(QStringLiteral("idx_items_name")));
+
     execSql(QStringLiteral("SELECT note FROM items WHERE id = 1"));
     QCOMPARE(resultTable->rowCount(), 1);
     QVERIFY(resultTable->item(0, 0));
@@ -193,6 +211,12 @@ void QtUiSmokeTest::adminButtonsAndTableEditorRespectPermissions()
 
     connectAs(QStringLiteral("qt_reader"), QStringLiteral("reader123"));
     execSql(QStringLiteral("USE qt_admin_pipe"));
+    QVERIFY(QMetaObject::invokeMethod(adapter, "refreshCatalog", Qt::DirectConnection));
+    QVERIFY(findTreeItem(tree, QStringLiteral("qt_admin_pipe")));
+    QVERIFY(findTreeItem(tree, QStringLiteral("items")));
+    QVERIFY(!findTreeItem(tree, QStringLiteral("hidden_items")));
+    QVERIFY(!findTreeItem(tree, QStringLiteral("Users / Privileges")));
+
     execSql(QStringLiteral("SELECT name FROM items WHERE id = 1"));
     QCOMPARE(resultTable->rowCount(), 1);
     QVERIFY(resultTable->item(0, 0));

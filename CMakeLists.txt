@@ -82,6 +82,8 @@ if(DBMS_BUILD_QT)
                 src/ui/CatalogTypes.h
                 src/ui/MainWindow.h
                 src/ui/MainWindow.cpp
+                src/ui/ObjectDetailPanel.h
+                src/ui/ObjectDetailPanel.cpp
                 src/ui/QtSessionAdapter.h
                 src/ui/QtSessionAdapter.cpp
                 src/ui/SessionPanel.h

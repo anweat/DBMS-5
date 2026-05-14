@@ -19,10 +19,13 @@ public slots:
 signals:
     void refreshRequested();
     void tableOpenRequested(const QString &database, const QString &table);
+    void databaseUseRequested(const QString &database);
+    void objectDetailRequested(const QString &title, const QStringList &lines);
     void sqlRequested(const QString &sql);
 
 private:
     void openCurrentItem(QTreeWidgetItem *item);
+    void selectCurrentItem(QTreeWidgetItem *item);
 
     QTreeWidget *tree_;
 };

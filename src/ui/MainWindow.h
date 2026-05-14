@@ -6,6 +6,7 @@
 class QtSessionAdapter;
 class AdminPanel;
 class DatabaseTreePanel;
+class ObjectDetailPanel;
 class ResultTablePanel;
 class SessionPanel;
 class SqlEditorPanel;
@@ -28,6 +29,7 @@ private:
     QtSessionAdapter *adapter_;
     AdminPanel *adminPanel_;
     DatabaseTreePanel *databaseTreePanel_;
+    ObjectDetailPanel *objectDetailPanel_;
     SessionPanel *sessionPanel_;
     SqlEditorPanel *sqlEditorPanel_;
     ResultTablePanel *resultTablePanel_;

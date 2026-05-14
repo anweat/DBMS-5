@@ -68,6 +68,18 @@ static void requireAuthenticated(const Session &s)
                           "Not authenticated. Use: CONNECT 'user' IDENTIFIED BY 'password'");
 }
 
+static bool hasAnyPrivilege(UserManager &userMgr,
+                            const std::string &user,
+                            const std::string &db,
+                            const std::string &table)
+{
+    return userMgr.hasPrivilege(user, db, table, Privilege::SELECT) ||
+           userMgr.hasPrivilege(user, db, table, Privilege::INSERT) ||
+           userMgr.hasPrivilege(user, db, table, Privilege::UPDATE) ||
+           userMgr.hasPrivilege(user, db, table, Privilege::DELETE) ||
+           userMgr.hasPrivilege(user, db, table, Privilege::ALL);
+}
+
 void Executor::checkPermission(const Session &s, const std::string &db,
                                const std::string &table, Privilege priv)
 {
@@ -411,7 +423,20 @@ QueryResult Executor::execShowDatabases(Session &s)
     r.columns.push_back({"Database", FieldType::VARCHAR});
     for (const auto &db : dbs)
     {
-        r.rows.push_back({FieldValue{db}});
+        bool visible = (s.user == "root") || hasAnyPrivilege(userMgr_, s.user, db, "*");
+        if (!visible)
+        {
+            for (const auto &table : tblMgr_.listTables(db))
+            {
+                if (hasAnyPrivilege(userMgr_, s.user, db, table))
+                {
+                    visible = true;
+                    break;
+                }
+            }
+        }
+        if (visible)
+            r.rows.push_back({FieldValue{db}});
     }
     r.rowCount = static_cast<int>(r.rows.size());
     return r;
@@ -509,7 +534,8 @@ QueryResult Executor::execShowTables(Session &s)
     r.type = QueryResult::Type::SELECT;
     r.columns.push_back({"Tables_in_" + db, FieldType::VARCHAR});
     for (const auto &t : tables)
-        r.rows.push_back({FieldValue{t}});
+        if (s.user == "root" || hasAnyPrivilege(userMgr_, s.user, db, t))
+            r.rows.push_back({FieldValue{t}});
     r.rowCount = static_cast<int>(r.rows.size());
     return r;
 }
