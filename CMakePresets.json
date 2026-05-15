@@ -33,6 +33,19 @@
         "DBMS_BUILD_QT": "ON",
         "DBMS_BUILD_TESTS": "OFF"
       }
+    },
+    {
+      "name": "macos-qt-debug",
+      "displayName": "macOS Qt6 Debug",
+      "description": "Build Qt frontend with official Qt installer on macOS.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/macos-qt-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_PREFIX_PATH": "/Users/watuji/Qt/6.11.1/macos",
+        "DBMS_BUILD_QT": "ON",
+        "CMAKE_CXX_COMPILER": "/usr/bin/clang++"
+      }
     }
   ],
   "buildPresets": [
@@ -43,9 +56,12 @@
     {
       "name": "windows-msys2-ucrt64-qt",
       "configurePreset": "windows-msys2-ucrt64-qt",
-      "targets": [
-        "dbms_qt"
-      ]
+      "targets": ["dbms_qt"]
+    },
+    {
+      "name": "macos-qt-debug",
+      "configurePreset": "macos-qt-debug",
+      "targets": ["dbms_qt"]
     }
   ],
   "testPresets": [
