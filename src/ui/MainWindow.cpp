@@ -89,8 +89,15 @@ MainWindow::MainWindow(QWidget *parent)
             adapter_, &QtSessionAdapter::loadTable);
     connect(databaseTreePanel_, &DatabaseTreePanel::databaseUseRequested,
             this, [this](const QString &database) {
+                adminPanel_->setCurrentDatabase(database);
                 executeSql(QStringLiteral("USE %1").arg(database));
             });
+    connect(databaseTreePanel_, &DatabaseTreePanel::tableFocused,
+            this, [this](const QString &database, const QString &table, const QStringList &columns) {
+                adminPanel_->setCurrentTable(database, table, columns);
+            });
+    connect(databaseTreePanel_, &DatabaseTreePanel::tableStructureRequested,
+            adminPanel_, &AdminPanel::setCurrentStructure);
     connect(databaseTreePanel_, &DatabaseTreePanel::objectDetailRequested,
             objectDetailPanel_, &ObjectDetailPanel::showObject);
     connect(databaseTreePanel_, &DatabaseTreePanel::sqlRequested,

@@ -2,6 +2,7 @@
 #include "ui/QtSessionAdapter.h"
 
 #include <QApplication>
+#include <QCheckBox>
 #include <QColor>
 #include <QComboBox>
 #include <QHeaderView>
@@ -148,17 +149,32 @@ void QtUiSmokeTest::adminButtonsAndTableEditorRespectPermissions()
 
     auto *adminDb = mustFind<QLineEdit>(window, QStringLiteral("adminDatabaseEdit"));
     auto *adminTable = mustFind<QLineEdit>(window, QStringLiteral("adminTableEdit"));
-    auto *adminColumn = mustFind<QLineEdit>(window, QStringLiteral("adminColumnEdit"));
-    auto *adminType = mustFind<QLineEdit>(window, QStringLiteral("adminColumnTypeEdit"));
-    auto *adminDefault = mustFind<QLineEdit>(window, QStringLiteral("adminDefaultEdit"));
-    auto *addColumnButton = mustFind<QPushButton>(window, QStringLiteral("adminAddColumnButton"));
+    auto *tableColumns = mustFind<QTableWidget>(window, QStringLiteral("adminTableColumnsTable"));
+    auto *addColumnSpecButton = mustFind<QPushButton>(window, QStringLiteral("adminAddColumnSpecButton"));
+    auto *applyColumnSpecButton = mustFind<QPushButton>(window, QStringLiteral("adminApplyColumnsButton"));
+    auto *deleteWhere = mustFind<QLineEdit>(window, QStringLiteral("adminDeleteWhereEdit"));
+    auto *createTableButton = mustFind<QPushButton>(window, QStringLiteral("adminCreateTableButton"));
+    auto *deleteRowsButton = mustFind<QPushButton>(window, QStringLiteral("adminDeleteRowsButton"));
+    auto *dropTableButton = mustFind<QPushButton>(window, QStringLiteral("adminDropTableButton"));
+    auto *detailTitle = mustFind<QLabel>(window, QStringLiteral("objectDetailTitle"));
+    auto *detailView = mustFind<QTextEdit>(window, QStringLiteral("objectDetailView"));
+    auto clickTreeItem = [&](QTreeWidgetItem *item) {
+        QVERIFY(item);
+        tree->scrollToItem(item);
+        tree->setCurrentItem(item);
+        QCoreApplication::processEvents();
+    };
 
     adminDb->setText(QStringLiteral("qt_admin_pipe"));
     adminTable->setText(QStringLiteral("items"));
-    adminColumn->setText(QStringLiteral("note"));
-    adminType->setText(QStringLiteral("VARCHAR(20)"));
-    adminDefault->setText(QStringLiteral("fresh"));
-    QTest::mouseClick(addColumnButton, Qt::LeftButton);
+    QVERIFY(QMetaObject::invokeMethod(adapter, "refreshCatalog", Qt::DirectConnection));
+    clickTreeItem(findTreeItem(tree, QStringLiteral("items")));
+    addColumnSpecButton->click();
+    const int noteSpecRow = tableColumns->rowCount() - 1;
+    QVERIFY(noteSpecRow >= 0);
+    tableColumns->item(noteSpecRow, 0)->setText(QStringLiteral("note"));
+    tableColumns->item(noteSpecRow, 1)->setText(QStringLiteral("VARCHAR(20)"));
+    applyColumnSpecButton->click();
     QCoreApplication::processEvents();
 
     QVERIFY(QMetaObject::invokeMethod(adapter, "refreshCatalog", Qt::DirectConnection));
@@ -172,32 +188,58 @@ void QtUiSmokeTest::adminButtonsAndTableEditorRespectPermissions()
     QVERIFY(findTreeItem(tree, QStringLiteral("items"))->isExpanded());
     QVERIFY(tree->header()->sectionSize(0) > 0);
 
-    auto *detailTitle = mustFind<QLabel>(window, QStringLiteral("objectDetailTitle"));
-    auto *detailView = mustFind<QTextEdit>(window, QStringLiteral("objectDetailView"));
-    auto clickTreeItem = [&](QTreeWidgetItem *item) {
-        QVERIFY(item);
-        tree->scrollToItem(item);
-        tree->setCurrentItem(item);
-        QCoreApplication::processEvents();
-    };
-
     clickTreeItem(findTreeItem(tree, QStringLiteral("qt_admin_pipe")));
     QVERIFY(detailView->toPlainText().contains(QStringLiteral("Database: qt_admin_pipe")));
     clickTreeItem(findTreeItem(tree, QStringLiteral("note")));
     QVERIFY(detailView->toPlainText().contains(QStringLiteral("Column: note")));
+    auto *editorTable = mustFind<QTableWidget>(window, QStringLiteral("tableEditorTable"));
+    QVERIFY(editorTable->columnCount() >= 3);
+    QVERIFY(tableColumns->rowCount() >= 3);
     clickTreeItem(findTreeItem(tree, QStringLiteral("idx_items_name")));
     QVERIFY(detailTitle->text().contains(QStringLiteral("idx_items_name")));
 
-    execSql(QStringLiteral("SELECT note FROM items WHERE id = 1"));
+    execSql(QStringLiteral("SELECT id FROM items WHERE id = 1"));
     QCOMPARE(resultTable->rowCount(), 1);
     QVERIFY(resultTable->item(0, 0));
-    QCOMPARE(resultTable->item(0, 0)->text(), QStringLiteral("fresh"));
+    QCOMPARE(resultTable->item(0, 0)->text(), QStringLiteral("1"));
+
+    adminTable->setText(QStringLiteral("created_from_ui"));
+    tableColumns->setRowCount(0);
+    addColumnSpecButton->click();
+    addColumnSpecButton->click();
+    QCOMPARE(tableColumns->rowCount(), 2);
+    QVERIFY(tableColumns->item(0, 0));
+    QVERIFY(tableColumns->item(0, 1));
+    QVERIFY(tableColumns->item(1, 0));
+    QVERIFY(tableColumns->item(1, 1));
+    tableColumns->item(0, 0)->setText(QStringLiteral("id"));
+    tableColumns->item(0, 1)->setText(QStringLiteral("INT"));
+    auto *primaryKeyCheck = qobject_cast<QCheckBox *>(tableColumns->cellWidget(0, 3));
+    QVERIFY(primaryKeyCheck);
+    primaryKeyCheck->setChecked(true);
+    tableColumns->item(1, 0)->setText(QStringLiteral("label"));
+    tableColumns->item(1, 1)->setText(QStringLiteral("VARCHAR(20)"));
+    QTest::mouseClick(createTableButton, Qt::LeftButton);
+    QCoreApplication::processEvents();
+    execSql(QStringLiteral("INSERT INTO created_from_ui (id, label) VALUES (7, 'delete_me')"));
+    deleteWhere->setText(QStringLiteral("id = 7"));
+    QTest::mouseClick(deleteRowsButton, Qt::LeftButton);
+    QCoreApplication::processEvents();
+    execSql(QStringLiteral("SELECT label FROM created_from_ui WHERE id = 7"));
+    QCOMPARE(resultTable->rowCount(), 0);
+    QTest::mouseClick(dropTableButton, Qt::LeftButton);
+    QCoreApplication::processEvents();
+    QVERIFY(QMetaObject::invokeMethod(adapter, "refreshCatalog", Qt::DirectConnection));
+    QVERIFY(!findTreeItem(tree, QStringLiteral("created_from_ui")));
+    adminTable->setText(QStringLiteral("items"));
 
     auto *adminUser = mustFind<QLineEdit>(window, QStringLiteral("adminUserEdit"));
     auto *adminPassword = mustFind<QLineEdit>(window, QStringLiteral("adminPasswordEdit"));
     auto *privDb = mustFind<QLineEdit>(window, QStringLiteral("adminPrivilegeDbEdit"));
     auto *privTable = mustFind<QLineEdit>(window, QStringLiteral("adminPrivilegeTableEdit"));
     auto *privCombo = mustFind<QComboBox>(window, QStringLiteral("adminPrivilegeCombo"));
+    auto *privSelect = mustFind<QCheckBox>(window, QStringLiteral("adminPrivilegeSelectCheck"));
+    auto *privInsert = mustFind<QCheckBox>(window, QStringLiteral("adminPrivilegeInsertCheck"));
     auto *createUserButton = mustFind<QPushButton>(window, QStringLiteral("adminCreateUserButton"));
     auto *grantButton = mustFind<QPushButton>(window, QStringLiteral("adminGrantButton"));
 
@@ -207,6 +249,8 @@ void QtUiSmokeTest::adminButtonsAndTableEditorRespectPermissions()
     privDb->setText(QStringLiteral("qt_admin_pipe"));
     privTable->setText(QStringLiteral("items"));
     privCombo->setCurrentText(QStringLiteral("SELECT"));
+    privSelect->setChecked(true);
+    privInsert->setChecked(false);
     QTest::mouseClick(grantButton, Qt::LeftButton);
     QCoreApplication::processEvents();
 
@@ -230,7 +274,6 @@ void QtUiSmokeTest::adminButtonsAndTableEditorRespectPermissions()
     QVERIFY(QMetaObject::invokeMethod(adapter, "loadTable", Qt::DirectConnection,
                                       Q_ARG(QString, QStringLiteral("qt_admin_pipe")),
                                       Q_ARG(QString, QStringLiteral("items"))));
-    auto *editorTable = mustFind<QTableWidget>(window, QStringLiteral("tableEditorTable"));
     auto *addRowButton = mustFind<QPushButton>(window, QStringLiteral("tableAddRowButton"));
     auto *saveEditsButton = mustFind<QPushButton>(window, QStringLiteral("tableSaveEditsButton"));
 
@@ -270,16 +313,13 @@ void QtUiSmokeTest::adminButtonsAndTableEditorRespectPermissions()
     QVERIFY(newRow >= 0);
     editorTable->setItem(newRow, 0, new QTableWidgetItem(QStringLiteral("2")));
     editorTable->setItem(newRow, 1, new QTableWidgetItem(QStringLiteral("beta")));
-    editorTable->setItem(newRow, 2, new QTableWidgetItem(QStringLiteral("typed")));
     QTest::mouseClick(saveEditsButton, Qt::LeftButton);
     QCoreApplication::processEvents();
 
-    execSql(QStringLiteral("SELECT name, note FROM items WHERE id = 2"));
+    execSql(QStringLiteral("SELECT name FROM items WHERE id = 2"));
     QVERIFY2(resultTable->rowCount() == 1, statusLog->toPlainText().toUtf8().constData());
     QVERIFY(resultTable->item(0, 0));
-    QVERIFY(resultTable->item(0, 1));
     QCOMPARE(resultTable->item(0, 0)->text(), QStringLiteral("beta"));
-    QCOMPARE(resultTable->item(0, 1)->text(), QStringLiteral("typed"));
 
     QVERIFY(QMetaObject::invokeMethod(adapter, "loadTable", Qt::DirectConnection,
                                       Q_ARG(QString, QStringLiteral("qt_admin_pipe")),
@@ -297,7 +337,7 @@ void QtUiSmokeTest::adminButtonsAndTableEditorRespectPermissions()
     editorTable->item(idTwoRow, 0)->setText(QStringLiteral("3"));
     QTest::mouseClick(saveEditsButton, Qt::LeftButton);
     QCoreApplication::processEvents();
-    execSql(QStringLiteral("SELECT name, note FROM items WHERE id = 3"));
+    execSql(QStringLiteral("SELECT name FROM items WHERE id = 3"));
     QVERIFY2(resultTable->rowCount() == 1, statusLog->toPlainText().toUtf8().constData());
     QVERIFY(resultTable->item(0, 0));
     QCOMPARE(resultTable->item(0, 0)->text(), QStringLiteral("beta"));

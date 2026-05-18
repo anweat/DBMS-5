@@ -48,21 +48,56 @@ static void serializeField(const ColumnDefinition& col, const FieldValue& val, c
     char* d = buf + 1;
     switch (col.type) {
         case FieldType::INTEGER: {
-            int64_t v = std::get<int64_t>(val);
+            int64_t v = 0;
+            if (std::holds_alternative<int64_t>(val))
+                v = std::get<int64_t>(val);
+            else if (std::holds_alternative<double>(val))
+                v = static_cast<int64_t>(std::get<double>(val));
+            else if (std::holds_alternative<bool>(val))
+                v = std::get<bool>(val) ? 1 : 0;
+            else if (std::holds_alternative<std::string>(val)) {
+                try { v = static_cast<int64_t>(std::stoll(std::get<std::string>(val))); }
+                catch (...) {}
+            }
             std::memcpy(d, &v, 8);
             break;
         }
         case FieldType::DOUBLE: {
-            double v = std::get<double>(val);
+            double v = 0.0;
+            if (std::holds_alternative<double>(val))
+                v = std::get<double>(val);
+            else if (std::holds_alternative<int64_t>(val))
+                v = static_cast<double>(std::get<int64_t>(val));
+            else if (std::holds_alternative<bool>(val))
+                v = std::get<bool>(val) ? 1.0 : 0.0;
+            else if (std::holds_alternative<std::string>(val)) {
+                try { v = std::stod(std::get<std::string>(val)); }
+                catch (...) {}
+            }
             std::memcpy(d, &v, 8);
             break;
         }
         case FieldType::BOOL: {
-            d[0] = std::get<bool>(val) ? 1 : 0;
+            bool v = false;
+            if (std::holds_alternative<bool>(val))
+                v = std::get<bool>(val);
+            else if (std::holds_alternative<int64_t>(val))
+                v = std::get<int64_t>(val) != 0;
+            else if (std::holds_alternative<double>(val))
+                v = std::get<double>(val) != 0.0;
+            d[0] = v ? 1 : 0;
             break;
         }
         case FieldType::VARCHAR: {
-            const std::string& s = std::get<std::string>(val);
+            std::string s;
+            if (std::holds_alternative<std::string>(val))
+                s = std::get<std::string>(val);
+            else if (std::holds_alternative<int64_t>(val))
+                s = std::to_string(std::get<int64_t>(val));
+            else if (std::holds_alternative<double>(val))
+                s = std::to_string(std::get<double>(val));
+            else if (std::holds_alternative<bool>(val))
+                s = std::get<bool>(val) ? "TRUE" : "FALSE";
             size_t cap = dsz - 4;
             uint32_t len = static_cast<uint32_t>(s.size() < cap ? s.size() : cap);
             std::memcpy(d, &len, 4);
@@ -71,7 +106,15 @@ static void serializeField(const ColumnDefinition& col, const FieldValue& val, c
             break;
         }
         case FieldType::DATETIME: {
-            const std::string& s = std::get<std::string>(val);
+            std::string s;
+            if (std::holds_alternative<std::string>(val))
+                s = std::get<std::string>(val);
+            else if (std::holds_alternative<int64_t>(val))
+                s = std::to_string(std::get<int64_t>(val));
+            else if (std::holds_alternative<double>(val))
+                s = std::to_string(std::get<double>(val));
+            else if (std::holds_alternative<bool>(val))
+                s = std::get<bool>(val) ? "TRUE" : "FALSE";
             std::memset(d, 0, 20);
             size_t len = s.size() < 19 ? s.size() : 19;
             std::memcpy(d, s.c_str(), len);

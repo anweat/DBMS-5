@@ -5,11 +5,11 @@
 
 ## 目标页面
 
-- 左侧对象树：展示数据库、表、列、索引占位、用户和权限。
+- 左侧对象树：展示数据库、表、列、索引占位、用户和权限，并提供常用对象右键操作。
 - 表数据编辑：双击表后加载 `SELECT *`，支持新增行、删除行、保存单元格编辑。
 - SQL 输入区：使用多行输入控件编写 SQL，保留联表查询示例。
 - 结果表格：将 `QueryResult.columns` 和 `QueryResult.rows` 渲染为只读结果。
-- 管理面板：生成并执行数据库、列、索引、用户、权限相关基础 SQL。
+- 管理面板：跟随左侧树聚焦当前库/表，按 Object / Structure / Users 拆分，生成并执行建库建表、删除、列、索引、用户、权限相关基础 SQL。Object 页用字段表格展示当前表结构，也可通过 `+` / `-` 编辑字段行，再用 `Apply Columns` 统一提交列变更。
 - 状态/错误提示：显示 affectedRows、错误信息、当前会话状态。
 
 ## 建议文件
@@ -38,7 +38,7 @@ src/ui/
 | `SessionPanel` | 登录输入、当前用户/数据库/事务状态显示 | 不直接执行 SQL |
 | `DatabaseTreePanel` | 展示 catalog 快照、双击表发出打开请求 | 不直接查询后端 |
 | `TableEditorPanel` | 将表数据编辑转换为 INSERT/UPDATE/DELETE | 不做权限绕过或存储层修改 |
-| `AdminPanel` | 生成 DDL/DCL SQL：库、列、索引、用户、权限 | 不绕过 SQL 权限检查 |
+| `AdminPanel` | 根据对象树焦点生成 DDL/DCL SQL：库、表、删除、列、索引、用户、权限 | 不绕过 SQL 权限检查 |
 | `SqlEditorPanel` | SQL 编辑、执行按钮、历史/示例 SQL | 不解析 SQL，不持有 DBEngine |
 | `ResultTablePanel` | 渲染 `QueryResult::columns` 和 `QueryResult::rows` | 不访问存储文件 |
 | `StatusMetaPanel` | 渲染错误、耗时、affectedRows、库表/表结构信息 | 不做后端权限判断 |

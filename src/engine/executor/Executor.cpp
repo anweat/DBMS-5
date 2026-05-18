@@ -201,7 +201,14 @@ static FieldValue coerce(const FieldValue &v, const ColumnDefinition &col)
         if (std::holds_alternative<double>(v))
             return std::get<double>(v) != 0.0;
         break;
-    default:
+    case FieldType::VARCHAR:
+    case FieldType::DATETIME:
+        if (std::holds_alternative<int64_t>(v))
+            return std::to_string(std::get<int64_t>(v));
+        if (std::holds_alternative<double>(v))
+            return std::to_string(std::get<double>(v));
+        if (std::holds_alternative<bool>(v))
+            return std::get<bool>(v) ? std::string("TRUE") : std::string("FALSE");
         break;
     }
     return v;

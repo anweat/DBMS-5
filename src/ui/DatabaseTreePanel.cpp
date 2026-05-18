@@ -1,7 +1,9 @@
 #include "DatabaseTreePanel.h"
 
+#include <QAction>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QMenu>
 #include <QPushButton>
 #include <QTreeWidget>
 #include <QVBoxLayout>
@@ -12,6 +14,7 @@ constexpr int RoleKind = Qt::UserRole + 1;
 constexpr int RoleDatabase = Qt::UserRole + 2;
 constexpr int RoleTable = Qt::UserRole + 3;
 constexpr int RoleLines = Qt::UserRole + 4;
+constexpr int RoleColumns = Qt::UserRole + 5;
 constexpr int KindDatabase = 1;
 constexpr int KindTable = 2;
 constexpr int KindColumn = 3;
@@ -26,6 +29,7 @@ DatabaseTreePanel::DatabaseTreePanel(QWidget *parent)
     tree_->setObjectName(QStringLiteral("databaseTree"));
     tree_->setHeaderLabel(tr("Objects"));
     tree_->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    tree_->setContextMenuPolicy(Qt::CustomContextMenu);
     tree_->setTextElideMode(Qt::ElideNone);
     tree_->header()->setStretchLastSection(false);
     tree_->header()->setSectionResizeMode(QHeaderView::ResizeToContents);
@@ -41,6 +45,49 @@ DatabaseTreePanel::DatabaseTreePanel(QWidget *parent)
     });
     connect(tree_, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem *item, int) {
         openCurrentItem(item);
+    });
+    connect(tree_, &QTreeWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
+        QTreeWidgetItem *item = tree_->itemAt(pos);
+        if (!item)
+            return;
+
+        const int kind = item->data(0, RoleKind).toInt();
+        const QString database = item->data(0, RoleDatabase).toString();
+        const QString table = item->data(0, RoleTable).toString();
+        if (kind != KindDatabase && kind != KindTable)
+            return;
+
+        QMenu menu(this);
+        if (kind == KindDatabase)
+        {
+            auto *useAction = menu.addAction(tr("Use Database"));
+            connect(useAction, &QAction::triggered, this, [this, database]() {
+                emit databaseUseRequested(database);
+            });
+            auto *dropAction = menu.addAction(tr("Drop Database"));
+            dropAction->setObjectName(QStringLiteral("treeDropDatabaseAction"));
+            connect(dropAction, &QAction::triggered, this, [this, database]() {
+                emit sqlRequested(QStringLiteral("DROP DATABASE %1").arg(database));
+            });
+        }
+        else if (kind == KindTable)
+        {
+            auto *openAction = menu.addAction(tr("Open Table"));
+            connect(openAction, &QAction::triggered, this, [this, database, table]() {
+                emit tableOpenRequested(database, table);
+            });
+            auto *deleteRowsAction = menu.addAction(tr("Delete All Rows"));
+            deleteRowsAction->setObjectName(QStringLiteral("treeDeleteRowsAction"));
+            connect(deleteRowsAction, &QAction::triggered, this, [this, database, table]() {
+                emit sqlRequested(QStringLiteral("DELETE FROM %1.%2").arg(database, table));
+            });
+            auto *dropAction = menu.addAction(tr("Drop Table"));
+            dropAction->setObjectName(QStringLiteral("treeDropTableAction"));
+            connect(dropAction, &QAction::triggered, this, [this, database, table]() {
+                emit sqlRequested(QStringLiteral("DROP TABLE %1.%2").arg(database, table));
+            });
+        }
+        menu.exec(tree_->viewport()->mapToGlobal(pos));
     });
 
     auto *buttons = new QHBoxLayout;
@@ -71,10 +118,15 @@ void DatabaseTreePanel::setCatalog(const CatalogSnapshot &catalog)
         auto *tablesItem = new QTreeWidgetItem(dbItem, {tr("Tables")});
         for (const auto &table : database.tables)
         {
+            QStringList tableColumns;
+            for (const auto &column : table.columns)
+                tableColumns << QStringList{column.name, column.type, column.nullable, column.key}.join('\t');
+
             auto *tableItem = new QTreeWidgetItem(tablesItem, {table.name});
             tableItem->setData(0, RoleKind, KindTable);
             tableItem->setData(0, RoleDatabase, database.name);
             tableItem->setData(0, RoleTable, table.name);
+            tableItem->setData(0, RoleColumns, tableColumns);
             tableItem->setData(0, RoleLines, QStringList{
                 tr("Database: %1").arg(database.name),
                 tr("Table: %1").arg(table.name),
@@ -93,6 +145,7 @@ void DatabaseTreePanel::setCatalog(const CatalogSnapshot &catalog)
                 columnItem->setData(0, RoleKind, KindColumn);
                 columnItem->setData(0, RoleDatabase, database.name);
                 columnItem->setData(0, RoleTable, table.name);
+                columnItem->setData(0, RoleColumns, tableColumns);
                 columnItem->setData(0, RoleLines, QStringList{
                     tr("Database: %1").arg(database.name),
                     tr("Table: %1").arg(table.name),
@@ -109,6 +162,7 @@ void DatabaseTreePanel::setCatalog(const CatalogSnapshot &catalog)
                 indexItem->setData(0, RoleKind, KindIndex);
                 indexItem->setData(0, RoleDatabase, database.name);
                 indexItem->setData(0, RoleTable, table.name);
+                indexItem->setData(0, RoleColumns, tableColumns);
                 indexItem->setData(0, RoleLines, QStringList{
                     tr("Database: %1").arg(database.name),
                     tr("Table: %1").arg(table.name),
@@ -157,6 +211,7 @@ void DatabaseTreePanel::selectCurrentItem(QTreeWidgetItem *item)
     const int kind = item->data(0, RoleKind).toInt();
     const QString database = item->data(0, RoleDatabase).toString();
     const QString table = item->data(0, RoleTable).toString();
+    const QStringList columns = item->data(0, RoleColumns).toStringList();
     const QStringList lines = item->data(0, RoleLines).toStringList();
     if (!lines.isEmpty())
         emit objectDetailRequested(item->text(0), lines);
@@ -164,5 +219,13 @@ void DatabaseTreePanel::selectCurrentItem(QTreeWidgetItem *item)
     if (kind == KindDatabase)
         emit databaseUseRequested(database);
     else if (kind == KindTable)
+    {
         emit tableOpenRequested(database, table);
+        emit tableFocused(database, table, columns);
+    }
+    else if (kind == KindColumn || kind == KindIndex)
+    {
+        emit tableOpenRequested(database, table);
+        emit tableStructureRequested(database, table, columns);
+    }
 }

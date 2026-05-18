@@ -8,11 +8,17 @@
 // 辅助：FieldValue 比较
 // ============================================================
 
+static double toNumber(const std::string& s) {
+    try { return std::stod(s); }
+    catch (...) { return 0.0; }
+}
+
 // 将 FieldValue 统一转换为 double（用于数值比较）
 static double toDouble(const FieldValue& v) {
     if (std::holds_alternative<int64_t>(v)) return static_cast<double>(std::get<int64_t>(v));
     if (std::holds_alternative<double>(v))  return std::get<double>(v);
     if (std::holds_alternative<bool>(v))    return std::get<bool>(v) ? 1.0 : 0.0;
+    if (std::holds_alternative<std::string>(v)) return toNumber(std::get<std::string>(v));
     return 0.0;
 }
 
@@ -26,12 +32,10 @@ static std::string toString(const FieldValue& v) {
 
 // -1 / 0 / +1 比较，NULL 视为 false
 static int compareValues(const FieldValue& a, const FieldValue& b) {
-    // NULL 值比较
     bool aNul = std::holds_alternative<std::monostate>(a);
     bool bNul = std::holds_alternative<std::monostate>(b);
-    if (aNul || bNul) return -2; // 无法比较（返回特殊值）
+    if (aNul || bNul) return -2;
 
-    // 字符串 vs 字符串
     bool aStr = std::holds_alternative<std::string>(a);
     bool bStr = std::holds_alternative<std::string>(b);
     if (aStr && bStr) {
@@ -42,7 +46,6 @@ static int compareValues(const FieldValue& a, const FieldValue& b) {
         return 0;
     }
 
-    // 数值比较（int/double/bool 互转）
     double da = toDouble(a), db = toDouble(b);
     if (da < db) return -1;
     if (da > db) return  1;

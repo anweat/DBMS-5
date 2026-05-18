@@ -131,6 +131,18 @@ if(DBMS_BUILD_QT)
                 set_tests_properties(test_qt_ui PROPERTIES
                     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
                 )
+
+                add_executable(qt_demo_record
+                    tests/qt_demo_record.cpp
+                    ${DBMS_QT_SOURCES}
+                )
+                target_link_libraries(qt_demo_record PRIVATE dbms_core Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Test)
+                target_include_directories(qt_demo_record PRIVATE ${CMAKE_SOURCE_DIR}/src)
+                target_compile_definitions(qt_demo_record PRIVATE
+                    DBMS_VERSION="${PROJECT_VERSION}"
+                    $<$<BOOL:${WIN32}>:DBMS_WINDOWS>
+                    $<$<BOOL:${UNIX}>:DBMS_UNIX>
+                )
             endif()
         endif()
     else()

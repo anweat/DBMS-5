@@ -20,6 +20,8 @@ signals:
     void refreshRequested();
     void tableOpenRequested(const QString &database, const QString &table);
     void databaseUseRequested(const QString &database);
+    void tableFocused(const QString &database, const QString &table, const QStringList &columns);
+    void tableStructureRequested(const QString &database, const QString &table, const QStringList &columns);
     void objectDetailRequested(const QString &title, const QStringList &lines);
     void sqlRequested(const QString &sql);
 

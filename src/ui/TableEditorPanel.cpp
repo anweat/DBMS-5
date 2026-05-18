@@ -244,10 +244,6 @@ QString TableEditorPanel::literal(const QString &value) const
 {
     if (value.compare(QStringLiteral("NULL"), Qt::CaseInsensitive) == 0)
         return QStringLiteral("NULL");
-    bool ok = false;
-    value.toDouble(&ok);
-    if (ok)
-        return value;
     QString escaped = value;
     escaped.replace("'", "''");
     return QStringLiteral("'") + escaped + QStringLiteral("'");
