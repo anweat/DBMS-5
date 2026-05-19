@@ -4,6 +4,19 @@
 
 ---
 
+## 最终交付材料
+
+课程验收相关报告和汇报材料统一放在 `docs/final/`：
+
+| 材料 | 路径 |
+|---|---|
+| 交付文档目录 | `docs/final/00_交付文档目录.md` |
+| 启动报告 / 关闭报告 / 需求分析 / 设计 / 测试 / 用户手册 | `docs/final/` |
+| 汇报 PPT | `docs/final/DBMS-5_项目汇报.pptx` |
+| Qt 演示录屏 | `demos/qt_admin_workflow_demo_fullscreen.mp4` |
+
+---
+
 ## 功能特性
 
 | 类别 | 功能 |

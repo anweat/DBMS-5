@@ -38,7 +38,7 @@ feat(parser): 支持联表查询表别名
 feat(executor): 实现两表等值连接
 feat(ui): 添加 Qt 查询结果表格
 fix(executor): 修复同名字段歧义判断
-docs(readme): 更新一周冲刺计划
+docs(readme): 更新 12 周开发计划
 test(join): 增加三表联查集成测试
 ```
 
@@ -102,7 +102,7 @@ Closes #
 
 - 每个 PR 至少 1 人 Review 后合并
 - Parser 和 Executor 互相依赖的 PR，应由对方负责人参与 Review
-- Qt 前端 PR 至少由成员A或成员E确认没有绕过 `DBEngine`
+- Qt 前端 PR 至少由赵杰雄或王凯确认没有绕过 `DBEngine`
 - 合并方式优先使用 squash merge，保持 `develop` 历史清晰
 - 合并后删除已完成的 feature 分支
 - 对 `main` 和 `develop` 开启 branch protection 后，禁止绕过 PR 直接提交
@@ -112,7 +112,7 @@ Closes #
 - 合并前先从 `develop` 更新自己的分支
 - 只解决自己改动范围内的冲突
 - 不随意格式化无关文件
-- 发现接口冲突时先在 PR 评论中说明，由成员A统一决定接口走向
+- 发现接口冲突时先在 PR 评论中说明，由赵杰雄统一决定接口走向
 
 ## 7. GitHub 保护规则设置
 
