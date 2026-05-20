@@ -1,6 +1,31 @@
 # DBMS-5 — 轻量级关系型数据库管理系统
 
-一个用 **C++17** 从零实现的关系型 DBMS，支持完整 SQL 子集、B 树索引、ACID 事务与崩溃恢复（WAL）、用户权限体系。
+一个用 **C++17** 从零实现的关系型 DBMS，支持课程项目所需 SQL 子集、B 树索引、基础事务与 WAL 恢复、用户权限体系。
+
+---
+
+## 文档与最终交付
+
+文档已经统一收口到 `docs/`，建议从总目录开始阅读：
+
+| 材料 | 路径 |
+|---|---|
+| 文档总目录 | `docs/README.md` |
+| 最终交付目录 | `docs/final/00_交付文档目录.md` |
+| 阶段规划文档 | `docs/planning/` |
+| 技术参考文档 | `docs/reference/` |
+| 演示脚本与视频 | `demos/` |
+
+课程验收相关报告和汇报材料统一放在 `docs/final/`：
+
+| 材料 | 路径 |
+|---|---|
+| 交付文档目录 | `docs/final/00_交付文档目录.md` |
+| 启动报告 / 关闭报告 / 需求分析 / 设计 / 测试 / 用户手册 | `docs/final/` |
+| 汇报 PPT | `docs/final/DBMS-5_项目汇报.pptx` |
+| Qt 演示录屏 | `demos/qt_admin_workflow_demo_fullscreen.mp4` |
+| SQL 全覆盖脚本 | `demos/full_acceptance_demo.sql` |
+| CLI 逐句演示脚本 | `demos/cli_step_demo.sql` |
 
 ---
 
@@ -311,33 +336,38 @@ DBMS-5/
 │   │   │   └── ExprEvaluator.cpp/.h      # WHERE / HAVING 表达式求值
 │   │   └── storage/
 │   │       ├── DatabaseManager.cpp/.h    # 数据库（目录）管理
-│   │       ├── TableManager.cpp/.h       # 表定义（.tbl 文件）持久化
-│   │       ├── RecordManager.cpp/.h      # 行记录（堆文件 .dat）读写
+│   │       ├── TableManager.cpp/.h       # 表定义（.tdf 文件）持久化
+│   │       ├── RecordManager.cpp/.h      # 行记录（定长 .trd 文件）读写
 │   │       ├── IndexManager.cpp/.h       # 索引文件（.tix）管理
 │   │       ├── BTreeIndex.cpp/.h         # B 树索引（T=4，CLRS 第 18 章）
 │   │       ├── TransactionManager.cpp/.h # 内存 Undo Log（运行时回滚）
 │   │       ├── WalManager.cpp/.h         # WAL 日志写入与崩溃恢复
-│   │       └── UserManager.cpp/.h        # 用户/权限管理（.usr 文件）
+│   │       └── UserManager.cpp/.h        # 用户/权限管理（_users.dat 文件）
 │   └── ui/
 │       └── README.md                     # Qt Widgets 简单前端规划与接入说明
 ├── tests/
-│   ├── test_lexer.cpp                    # 词法单元测试（63 项）
-│   ├── test_integration.cpp              # 集成测试（62 项）
-│   ├── test_security.cpp                 # 权限安全测试（95 项）
-│   ├── test_comprehensive.cpp            # 综合行为测试（257 项）
-│   └── test_cli.cpp                      # CLI 输入行为测试（11 项）
+│   ├── test_lexer.cpp                    # 词法单元测试
+│   ├── test_integration.cpp              # 集成测试
+│   ├── test_security.cpp                 # 权限安全测试
+│   ├── test_comprehensive.cpp            # 综合行为测试
+│   ├── test_cli.cpp                      # CLI 输入行为测试
+│   └── test_join_parse.cpp               # JOIN 解析专项测试
 ├── data/                                 # 运行时数据目录（自动创建）
 ├── docs/
-│   └── GitHub提交策略.md                 # 分支、commit、PR、合并规范
+│   ├── README.md                         # 文档总目录
+│   ├── final/                            # 最终验收材料、PPT、截图资产
+│   ├── planning/                         # 开发规划、技术选型、分工、接口、原始需求
+│   └── reference/                        # 后端链路、GitHub 提交与保护策略
+├── demos/                                # 演示 SQL、恢复脚本和 Qt 录屏
 └── CMakeLists.txt
 ```
 
-### 当前一周开发重点
+### 验收发布重点
 
-- **联表查询**：补齐逗号 `FROM` 隐式内连接、显式 `INNER JOIN ... ON`、表别名、限定字段名、字段歧义报错和集成测试。
-- **DBMS 基建扩展**：`IN (SELECT ...)`、外连接、存储过程和触发器列入后端后续规划，避免前端本周范围被挤占。
-- **Qt 前端**：使用简单 Qt Widgets UI，包含 SQL 输入、执行按钮、结果表格、错误提示，直接复用 `DBEngine::execute()` 和 `QueryResult`。
-- **协作方式**：所有成员从 `feature/*` 分支提交 PR 到 `develop`，通过构建、相关测试和至少 1 人 Review 后合并。
+- **功能覆盖**：DDL、DML、JOIN、聚合、索引、事务、权限均已配套 SQL 脚本和测试材料。
+- **统一后端**：CLI 与 Qt 都复用 `DBEngine::execute()` 和 `QueryResult`，界面不绕过数据库内核。
+- **演示材料**：`docs/final/DBMS-5_项目汇报.pptx` 按成员分工组织；`demos/` 下提供录屏、全覆盖 SQL、逐句 SQL 和恢复脚本。
+- **协作沉淀**：早期规划、技术选型、接口和分工材料归档到 `docs/planning/`，后端链路和 GitHub 规范归档到 `docs/reference/`。
 
 ---
 
@@ -348,11 +378,12 @@ DBMS-5/
 $env:PATH = "C:\msys64\ucrt64\bin;" + $env:PATH
 cmake --build build
 
-.\build\test_lexer.exe           # 词法测试：       63 passed
-.\build\test_integration.exe     # 集成测试：       62 passed
-.\build\test_security.exe        # 权限安全测试：   95 passed
-.\build\test_comprehensive.exe   # 综合行为测试：  257 passed
-.\build\test_cli.exe             # CLI 输入测试：   11 passed
+.\build\test_lexer.exe           # 词法测试
+.\build\test_integration.exe     # 集成测试
+.\build\test_security.exe        # 权限安全测试
+.\build\test_comprehensive.exe   # 综合行为测试
+.\build\test_cli.exe             # CLI 输入测试
+.\build\test_join_parse.exe      # JOIN 解析测试
 ```
 
 ```bash
@@ -362,6 +393,7 @@ cmake --build build
 ./build/test_security
 ./build/test_comprehensive
 ./build/test_cli
+./build/test_join_parse
 ```
 
 ---
@@ -371,7 +403,7 @@ cmake --build build
 ### B 树索引（BTreeIndex）
 
 - 最小度 **T = 4**，每个非根节点持有 3–7 个键，根节点持有 1–7 个键。
-- 键类型 `std::string`，值类型 `std::vector<int64_t>`（行在 `.dat` 文件中的偏移量）。
+- 键类型 `std::string`，值类型 `std::vector<int64_t>`（行在 `.trd` 文件中的物理偏移量）。
 - 支持**同键多偏移**（非唯一索引）；唯一索引由调用方在插入前检查。
 - 完整实现 CLRS 第 18 章算法：`splitChild`、`insertNonFull`、`deleteKey`（情况 1/2/3）、`fill`、`borrowFromPrev`/`Next`、`merge`。
 - **持久化**：`IndexManager` 在关闭时通过 `inorder()` 将 B 树按序转储到 `.tix` 文件，下次启动时批量插入重建。
@@ -417,17 +449,17 @@ RBK|<txId>
 
 | 文件 | 说明 |
 |------|------|
-| `<db>/<table>.dat` | 堆文件，`\n` 分隔的 CSV 行记录（软删除置空行） |
-| `<db>/<table>.tbl` | 表定义（列名、类型、约束、外键） |
-| `<db>/<table>_<idx>.tix` | 索引文件，头部含 UNIQUE/COLUMNS 元数据，数据行为 `key\toff1,off2,...` |
-| `users.usr` | 用户账户与权限序列化 |
+| `<db>/<table>.trd` | 定长二进制记录文件，首字节标记 active/deleted，后续按列定长序列化 |
+| `<db>/<table>.tdf` | 表定义（列名、类型、约束、外键、自增计数） |
+| `<db>/<table>__<idx>.tix` | 索引文件，头部含 UNIQUE/COLUMNS 元数据，数据行为 `key\toff1,off2,...` |
+| `_users.dat` | 用户账户、密码盐值/哈希与权限序列化 |
 | `wal.log` | WAL 日志（正常退出后已 compact，崩溃时保留未提交条目） |
 
 ---
 
 ## 设计决策
 
-- **单文件堆存储**：记录以追加方式写入 `.dat`，删除仅将对应行置空（软删除），UPDATE 追加新行并清除旧偏移，减少随机写。
+- **单文件堆存储**：记录以定长格式写入 `.trd`，删除通过状态字节软删除，UPDATE 写入新记录并标记旧偏移删除，减少随机写。
 - **B 树 vs 哈希索引**：B 树天然支持范围扫描，与磁盘顺序读取相性好；T=4 在内存测试中单节点容量适中。
 - **WAL 优先于内存 Undo Log**：内存 Undo Log 在进程崩溃时丢失，WAL 提供持久化的 Undo 记录，是关系型数据库可靠性的基础。
 - **percent-encoding**：WAL 字段分隔符为 `|`，为保证含 `|`、换行等特殊字符的字符串值不破坏解析，对所有字符串字段做 percent-encoding。

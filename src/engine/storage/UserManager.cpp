@@ -128,7 +128,7 @@ Privilege UserManager::strToPriv(const std::string& s) {
 }
 
 // Serialize privilege list to a single string:
-// "db1.tbl1:SELECT,INSERT|db2.*:ALL"
+// "db1.table1:SELECT,INSERT|db2.*:ALL"
 std::string UserManager::serializePrivs(const std::vector<UserPrivilege>& privs) {
     std::ostringstream oss;
     bool firstEntry = true;

@@ -8,7 +8,7 @@ class DatabaseManager {
 public:
     explicit DatabaseManager(const std::string& dataDir);
 
-    /** 引擎启动时调用，确保 data 目录与 .mdb 系统文件存在 */
+    /** 引擎启动时调用，确保 data 目录存在 */
     void init();
 
     std::vector<std::string> listDatabases();
